@@ -1,0 +1,37 @@
+name: Spellcheck
+
+on:
+  workflow_call:
+    inputs:
+      config-path:
+        description: 'Directory where cspell.json is located'
+        default: ''
+        required: false
+        type: string
+      incremental-only:
+        description: 'Limit files check to those in pull/push or not'
+        default: true
+        required: false
+        type: boolean
+      root-path:
+        description: 'Directory in tree to begin the spell check'
+        default: ''
+        required: false
+        type: string
+      strict:
+        description: 'Spelling issues should cause a failure or not'
+        default: true
+        required: false
+        type: boolean
+   
+jobs:
+  spellcheck:
+    name: Perform Spell Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: streetsidesoftware/cspell-action@v2
+        with:
+          config: ${{ inputs.config-path }}
+          root: ${{ inputs.root-path }}
+          strict: ${{ inputs.strict }}
+          incremental_files_only: ${{ inputs.incremental-only }}
