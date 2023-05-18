@@ -5,21 +5,19 @@ on:
     inputs:
       config-path:
         description: 'Directory where cspell.json is located'
-        default: ''
         required: false
         type: string
       incremental-only:
-        description: 'Limit files check to those in pull/push or not'
+        description: 'Limit files checked to those in pull request/push'
         default: true
         required: false
         type: boolean
       root-path:
-        description: 'Directory in tree to begin the spell check'
-        default: ''
+        description: 'Directory in tree to begin spell check'
         required: false
         type: string
       strict:
-        description: 'Spelling issues should cause a failure or not'
+        description: 'Spelling issues should cause failure'
         default: true
         required: false
         type: boolean
@@ -29,6 +27,7 @@ jobs:
     name: Perform Spell Check
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v3
       - uses: streetsidesoftware/cspell-action@v2
         with:
           config: ${{ inputs.config-path }}
