@@ -1,0 +1,147 @@
+name: Build and Push to Docker Hub
+
+on:
+  workflow_call:
+    inputs:
+      download_artifact:
+        description: >
+          'The name of a build artifact containing the files required to build the image(s).
+          The download should contain a single .tar archive named build.tar.'
+        default: ''
+        required: false
+        type: string
+      platforms:
+        description: 'The platform(s) to build and push images for (as JSON string array).'
+        default: '["linux/amd64"]'
+        required: false
+        type: string
+      repository_name:
+        description: 'The repository to push images to (e.g. namespace/repo-name).'
+        default: ${{ github.repository }}
+        required: false
+        type: string
+      tag_latest:
+        description: 'Whether to tag the builds with the latest tag or not.'
+        default: false
+        required: false
+        type: boolean
+      tag_raw:
+        description: 'The raw tag name to tag the builds with, if any.'
+        default: ''
+        required: false
+        type: string
+    secrets:
+      dockerhub_username:
+        description: 'The username used to authenticate with Docker Hub.'
+        required: true
+      dockerhub_token:
+        description: 'The personal access token used to authenticate with Docker Hub.'
+        required: true
+
+jobs:
+  build:
+    name: 'Build and Push Image (${{ matrix.platform }})'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platforms) }}
+    steps:
+      - name: 'Docker Meta'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ inputs.repository_name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ inputs.tag_latest }}
+            type=raw,value=${{ inputs.tag_raw }},enable=${{ inputs.tag_raw != '' }}
+
+      - name: 'Set up QEMU'
+        uses: docker/setup-qemu-action@v3
+
+      - name: 'Set up Docker Buildx'
+        uses: docker/setup-buildx-action@v3
+
+      - name: 'Login to Docker Hub'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.dockerhub_username }}
+          password: ${{ secrets.dockerhub_token }}
+
+      - name: 'Download Files Required for Build'
+        if: ${{ inputs.download_artifact != '' }}
+        uses: actions/download-artifact@v3
+        with:
+          name: ${{ inputs.download_artifact }}
+          path: '/tmp/'
+
+      - name: 'Extract Files Required for Build'
+        if: ${{ inputs.download_artifact != '' }}
+        run: |
+          mkdir /tmp/src
+          tar -xvf /tmp/build.tar -C /tmp/src
+
+      - name: 'Build and Push by Digest'
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.platform }}
+          cache-to: type=gha,scope=${{ github.ref_name }}-${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ inputs.repository_name }},push-by-digest=true,name-canonical=true,push=true
+          platforms: ${{ matrix.platform }}
+
+      - name: 'Export Digest'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: 'Upload Digest'
+        uses: actions/upload-artifact@v3
+        with:
+          name: digests
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  push:
+    name: 'Merge Builds and Push Manifest'
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: 'Download Digests'
+        uses: actions/download-artifact@v3
+        with:
+          name: digests
+          path: /tmp/digests
+
+      - name: 'Set up Docker Buildx'
+        uses: docker/setup-buildx-action@v3
+
+      - name: 'Docker Meta'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ inputs.repository_name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ inputs.tag_latest }}
+            type=raw,value=${{ inputs.tag_raw }},enable=${{ inputs.tag_raw != '' }}
+
+      - name: 'Login to Docker Hub'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.dockerhub_username }}
+          password: ${{ secrets.dockerhub_token }}
+
+      - name: 'Create Manifest List and Push'
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ inputs.repository_name }}@sha256:%s ' *)
+        working-directory: /tmp/digests
+
+      - name: 'Inspect Image'
+        run: |
+          docker buildx imagetools inspect ${{ inputs.repository_name }}:${{ steps.meta.outputs.version }}
