@@ -1,0 +1,72 @@
+name: Vercel Build and Deploy
+
+on:
+  workflow_call:
+    inputs:
+      checkout_ref:
+        description: 'The ref of the branch, tag or SHA to checkout and use'
+        default: ${{ github.ref }}
+        required: false
+        type: string
+      environment:
+        description: 'The environment name to use (case-sensitive)'
+        required: true
+        type: string
+      prod_deployment:
+        description: 'Whether to deploy to production or not (deploy to preview if false)'
+        default: false
+        type: boolean
+    secrets:
+      vercel_org_id:
+        description: 'The User/Vercel ID or Team ID to use with the Vercel API'
+        required: true
+      vercel_project_id:
+        description: 'The Project ID to use with the Vercel API'
+        required: true
+      vercel_token:
+        description: 'The access token to use with the Vercel API'
+        required: true
+
+env:
+  VERCEL_ORG_ID: ${{ secrets.vercel_org_id }}
+  VERCEL_PROJECT_ID: ${{ secrets.vercel_project_id }}
+
+jobs:
+  build-deploy:
+    name: 'Build and Deploy to Vercel'
+    runs-on: ubuntu-latest
+    environment: 
+      name: ${{ inputs.environment }}
+      url: ${{ steps.deploy-url.outputs.url }}
+    steps:
+      - name: 'Set Required Variables'
+        id: vars
+        run: |
+          if [ ${{ inputs.prod_deployment }} == true ]; then
+            echo "vercel_env=production" >> $GITHUB_OUTPUT
+            echo "vercel_prod=--prod" >> $GITHUB_OUTPUT
+          else
+            echo "vercel_env=preview" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout_ref }}
+
+      - name: 'Install Vercel CLI'
+        run: npm install --global vercel@latest
+
+      - name: 'Pull Vercel Environment Information'
+        run: vercel pull --yes --environment=${{ steps.vars.outputs.vercel_env }} --token=${{ secrets.vercel_token }}
+
+      - name: 'Build Project Artifacts'
+        run: vercel build ${{ steps.vars.outputs.vercel_prod }} --token=${{ secrets.vercel_token }}
+
+      - name: 'Deploy Project Artifacts to Vercel'
+        run: vercel deploy --prebuilt ${{ steps.vars.outputs.vercel_prod }} --token=${{ secrets.vercel_token }} > vercel-out.txt
+
+      - name: 'Set ${{ inputs.environment }} Environment URL'
+        id: deploy-url
+        if: ${{ success() }}
+        run: echo "url=$(tail -n 1 vercel-out.txt)" >> $GITHUB_OUTPUT
