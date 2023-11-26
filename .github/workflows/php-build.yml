@@ -1,0 +1,64 @@
+name: PHP Build and Archive
+
+on: 
+  workflow_call:
+    inputs:
+      cache-deps:
+        description: 'Whether to cache composer dependencies'
+        default: true
+        required: false
+        type: boolean
+      php-versions:
+        description: 'The PHP versions to create builds for (as JSON string array)'
+        default: '["latest"]'
+        required: false
+        type: string
+      upload-artifact:
+        description: 'Whether to upload the build archive for reuse (filename format e.g. build-archive-php8.1)'
+        default: true
+        required: false
+        type: boolean
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ${{ fromJSON(inputs.php-versions) }}
+    
+    name: 'PHP ${{ matrix.php }}'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate composer.json and composer.lock
+        uses: php-actions/composer@v6
+        with:
+          command: validate
+
+      - name: Cache Composer Dependencies
+        if: ${{ inputs.cache-deps }}
+        id: composer-cache
+        uses: actions/cache@v3
+        with:
+          path: ./src/vendor
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-composer-
+
+      - name: Install Composer Dependencies
+        if: ${{ steps.composer-cache.outputs.cache-hit != 'true' }}
+        uses: php-actions/composer@v6
+        with:
+          php_version: ${{ matrix.php }}
+  
+      - name: Create Build Archive
+        run: |
+          mkdir /tmp/builds/ && tar -cvf /tmp/builds/build.tar ./
+
+      - name: Upload Build Archive
+        if: ${{ inputs.upload-artifact }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-archive-php${{ matrix.php }}
+          path: /tmp/builds
+          retention-days: 1
