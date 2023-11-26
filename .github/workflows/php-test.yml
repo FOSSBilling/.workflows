@@ -1,0 +1,125 @@
+name: PHP Tests
+
+on:
+  workflow_call:
+    inputs:
+      php-versions:
+        description: 'The PHP versions to create builds for (as JSON string array)'
+        default: '["latest"]'
+        required: false
+        type: string
+      download-artifact:
+        description: 'Whether to download the build archive (filename format e.g. build-archive-php8.1)'
+        default: true
+        required: false
+        type: boolean
+      download-test-files:
+        description: 'Whether to download files required for the test (artifact must be named test-files)'
+        default: false
+        required: false
+        type: boolean
+      prepare-test-script:
+        description: 'The name of a bash script prepare the test environment, if needed, in test-files artifact'
+        default: ''
+        required: false
+        type: string
+      prepare-test-env:
+        description: 'The name of a file containing required test environment variables, if needed, in test-files artifact'
+        default: ''
+        required: false
+        type: string        
+
+      # PHPStan options
+      enable-phpstan:
+        description: 'Whether to enable PHPStan tests'
+        default: true
+        required: false
+        type: boolean
+      phpstan-config-file:
+        description: 'The location of the PHPStan configuration file (phpstan.neon)'
+        default: 'phpstan.neon'
+        required: false
+        type: string
+      phpstan-memory-limit:
+        description: 'The memory limit for PHPStan'
+        default: '512M'
+        required: false
+        type: string        
+      phpstan-php-version:
+        description: 'The PHP version to use with PHPStan (if enabled)'
+        default: 'latest'
+        required: false
+        type: string
+      phpstan-version:
+        description: 'The version of PHPStan to use'
+        default: 'latest'
+        required: false
+        type: string
+
+      # PHPUnit options
+      enable-phpunit:
+        description: 'Whether to enable PHPUnit tests'
+        default: true
+        required: false
+        type: boolean
+      phpunit-config-file:
+        description: 'The location of the PHPUnit configuration file (phpunit.xml.dist)'
+        default: 'phpunit.xml.dist'
+        required: false
+        type: string
+      phpunit-version:
+        description: 'The version of PHPUnit to use'
+        default: 'latest'
+        required: false
+        type: string
+
+jobs:
+  php-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ${{ fromJSON(inputs.php-versions) }}
+
+    name: 'PHP ${{ matrix.php }}'
+    steps:
+      - name: Download PHP Build Archive
+        if: ${{ inputs.download-artifact }}
+        uses: actions/download-artifact@v3
+        with:
+          name: build-archive-php${{ matrix.php }}
+          path: /tmp/builds
+
+      - name: Extract Build Archive
+        run: tar -xvf /tmp/builds/build.tar ./
+
+      - name: Download Files Required for Tests
+        if: ${{ inputs.download-test-files }}
+        uses: actions/download-artifact@v3
+        with:
+          name: test-files
+          path: ./
+
+      - name: 'Run Script to Prepare Test Environment'
+        if: ${{ inputs.prepare-test-script != '' }}          
+        run: bash ./${{ inputs.prepare-test-script }}
+
+      - name: 'Set Required Environment Variables'
+        if: ${{ inputs.prepare-test-env != '' }}
+        run: sed "/#/d" ${{ inputs.prepare-test-env }} >> $GITHUB_ENV
+
+      - name: PHPStan
+        if: ${{ inputs.enable-phpstan && matrix.php == inputs.phpstan-php-version }}
+        uses: php-actions/phpstan@v3
+        with:
+          configuration: ${{inputs.phpstan-config-file }}
+          memory_limit: ${{ inputs.phpstan-memory-limit }}
+          php_version: ${{ inputs.phpstan-php-version }}
+          version: ${{ inputs.phpstan-version }}
+
+      - name: PHPUnit
+        if: ${{ inputs.enable-phpunit }}
+        uses: php-actions/phpunit@v3
+        with:
+          version: ${{ inputs.phpunit-version }}
+          php_version: ${{ matrix.php }}
+          configuration: ${{ inputs.phpunit-config-file }}
