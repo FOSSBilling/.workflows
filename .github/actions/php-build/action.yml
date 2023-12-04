@@ -1,0 +1,38 @@
+name: 'PHP Build'
+description: 'Create PHP build, installing required dependencies.'
+inputs:
+  cache-deps:
+    description: 'Whether to cache composer dependencies.'
+    required: false
+    default: 'true'
+  composer-args:
+    description: 'The arguments to pass to composer when installing dependencies.'
+    required: false
+    default: ''
+  php-version:
+    description: 'The PHP version to use.'
+    required: false
+    default: 'latest'
+runs:
+  using: 'composite'
+  steps:
+    - name: 'Validate composer.json and composer.lock'
+      uses: php-actions/composer@v6
+      with:
+        command: validate
+        php_version: ${{ inputs.php-version }}
+
+    - name: 'Cache Composer Dependencies'
+      id: composer-cache
+      if: ${{ inputs.cache-deps == 'true' }}
+      uses: actions/cache@v3
+      with:
+        key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+        path: './src/vendor'
+
+    - name: 'Install Composer Dependencies'
+      if: ${{ steps.composer-cache.outputs.cache-hit != 'true' }}
+      uses: php-actions/composer@v6
+      with:
+        args: ${{ inputs.composer-args }}
+        php_version: ${{ inputs.php-version }}

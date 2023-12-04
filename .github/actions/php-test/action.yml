@@ -1,0 +1,60 @@
+name: 'PHP Tests'
+description: 'Run PHPStan and/or PHPUnit tests.'
+inputs:
+  php-version:
+    description: 'The PHP version to use.'
+    default: 'latest'
+    required: false
+  # PHPStan options
+  phpstan-enable:
+    description: 'Whether to enable PHPStan.'
+    default: 'true'
+    required: false
+  phpstan-config:
+    description: 'The location of the PHPStan configuration file (phpstan.neon).'
+    default: 'phpstan.neon'
+    required: false
+  phpstan-memory-limit:
+    description: 'The memory limit for PHPStan.'
+    default: '512M'
+    required: false      
+  phpstan-php-version:
+    description: 'The PHP version to use with PHPStan.'
+    default: 'latest'
+    required: false
+  phpstan-version:
+    description: 'The version of PHPStan to use.'
+    default: 'latest'
+    required: false
+  # PHPUnit options
+  phpunit-enable:
+    description: 'Whether to enable PHPUnit.'
+    default: 'true'
+    required: false
+  phpunit-config-file:
+    description: 'The location of the PHPUnit configuration file (phpunit.xml.dist).'
+    default: 'phpunit.xml.dist'
+    required: false
+  phpunit-version:
+    description: 'The version of PHPUnit to use.'
+    default: 'latest'
+    required: false
+runs:
+  using: 'composite'
+  steps:
+    - name: 'PHPStan'
+      if: ${{ inputs.phpstan-enable == 'true' && inputs.php-version == inputs.phpstan-php-version }}
+      uses: php-actions/phpstan@v3
+      with:
+        configuration: ${{ inputs.phpstan-config }}
+        memory_limit: ${{ inputs.phpstan-memory-limit }}
+        php_version: ${{ inputs.phpstan-php-version }}
+        version: ${{ inputs.phpstan-version }}
+
+    - name: 'PHPUnit'
+      if: ${{ inputs.phpunit-enable == 'true' }}
+      uses: php-actions/phpunit@v3
+      with:
+        configuration: ${{ inputs.phpunit-config }}
+        php_version: ${{ inputs.php-version }}
+        version: ${{ inputs.phpunit-version }}
