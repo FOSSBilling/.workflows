@@ -53,7 +53,7 @@ runs:
 
     - name: 'PHPUnit'
       if: ${{ inputs.phpunit-enable == 'true' }}
-      uses: php-actions/phpunit@v3
+      uses: php-actions/phpunit@v4
       with:
         configuration: ${{ inputs.phpunit-config }}
         php_version: ${{ inputs.php-version }}
