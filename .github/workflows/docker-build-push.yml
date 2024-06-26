@@ -93,7 +93,7 @@ jobs:
 
       - name: 'Build and Push by Digest'
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.platform }}
           cache-to: type=gha,scope=${{ github.ref_name }}-${{ matrix.platform }}
