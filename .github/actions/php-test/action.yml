@@ -50,6 +50,7 @@ runs:
         memory_limit: ${{ inputs.phpstan-memory-limit }}
         php_version: ${{ inputs.phpstan-php-version }}
         version: ${{ inputs.phpstan-version }}
+        php_extensions: intl
 
     - name: 'PHPUnit'
       if: ${{ inputs.phpunit-enable == 'true' }}
@@ -58,3 +59,4 @@ runs:
         configuration: ${{ inputs.phpunit-config }}
         php_version: ${{ inputs.php-version }}
         version: ${{ inputs.phpunit-version }}
+        php_extensions: intl
