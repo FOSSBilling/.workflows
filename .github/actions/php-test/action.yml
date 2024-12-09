@@ -24,9 +24,9 @@ inputs:
     required: false
   phpstan-version:
     description: 'The version of PHPStan to use.'
-    default: 'latest'
+    default: 'composer'
     required: false
-  # PHPUnit options
+  # PHPUnit options 
   phpunit-enable:
     description: 'Whether to enable PHPUnit.'
     default: 'true'
@@ -37,14 +37,14 @@ inputs:
     required: false
   phpunit-version:
     description: 'The version of PHPUnit to use.'
-    default: 'latest'
+    default: 'composer'
     required: false
 runs:
   using: 'composite'
   steps:
     - name: 'PHPStan'
       if: ${{ inputs.phpstan-enable == 'true' && inputs.php-version == inputs.phpstan-php-version }}
-      uses: php-actions/phpstan@v3.0.2
+      uses: php-actions/phpstan@v3.0.3
       with:
         configuration: ${{ inputs.phpstan-config }}
         memory_limit: ${{ inputs.phpstan-memory-limit }}
