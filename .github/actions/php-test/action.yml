@@ -26,6 +26,10 @@ inputs:
     description: 'The version of PHPStan to use.'
     default: 'latest'
     required: false
+  phpstan-vendor-path:
+    description: 'The path to the vendored PHPStan binary.'
+    default: './vendor/bin/phpstan'
+    required: false
   # PHPUnit options
   phpunit-enable:
     description: 'Whether to enable PHPUnit.'
@@ -50,6 +54,7 @@ runs:
         memory_limit: ${{ inputs.phpstan-memory-limit }}
         php_version: ${{ inputs.phpstan-php-version }}
         version: ${{ inputs.phpstan-version }}
+        vendored_phpstan_path: ${{ inputs.phpstan-vendor-path }}
         php_extensions: intl
 
     - name: 'PHPUnit'
