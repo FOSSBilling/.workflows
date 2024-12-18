@@ -28,7 +28,7 @@ inputs:
     required: false
   phpstan-vendor-path:
     description: 'The path to the vendored PHPStan binary.'
-    default: './vendor/bin/phpstan'
+    default: 'vendor/bin/phpstan'
     required: false
   # PHPUnit options
   phpunit-enable:
