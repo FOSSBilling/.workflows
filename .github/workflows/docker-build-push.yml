@@ -72,7 +72,7 @@ jobs:
           password: ${{ secrets.dockerhub-token }}
 
       - name: 'Checkout Dockerfile'
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           sparse-checkout: |
             Dockerfile
