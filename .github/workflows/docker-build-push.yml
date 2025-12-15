@@ -80,7 +80,7 @@ jobs:
 
       - name: 'Download Files Required for Build'
         if: ${{ inputs.download-artifact != '' }}
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: ${{ inputs.download-artifact }}
           path: '/tmp/'
@@ -150,7 +150,7 @@ jobs:
             }
 
       - name: 'Upload Digests'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: digests
           path: /tmp/digests/*
@@ -163,7 +163,7 @@ jobs:
     needs: build
     steps:
       - name: 'Download Digests'
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: digests
           path: /tmp/digests
