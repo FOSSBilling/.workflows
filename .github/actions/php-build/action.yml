@@ -38,12 +38,3 @@ runs:
         args: ${{ inputs.composer-args }}
         php_version: ${{ inputs.php-version }}
         php_extensions: intl
-
-    - name: 'Update Composer Autoloader'
-      if: ${{ steps.composer-cache.outputs.cache-hit != 'true' }}
-      uses: php-actions/composer@v6
-      with:
-        command: dump-autoload
-        args: ${{ inputs.composer-args }}
-        php_version: ${{ inputs.php-version }}
-        php_extensions: intl
