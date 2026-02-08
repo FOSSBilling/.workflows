@@ -1,9 +1,13 @@
 name: 'PHP Tests'
-description: 'Run PHPStan and/or PHPUnit tests.'
+description: 'Run PHP test frameworks (e.g., PHPStan and PHPUnit).'
 inputs:
   php-version:
     description: 'The PHP version to use.'
     default: 'latest'
+    required: false
+  php-vendor-dir:
+    description: 'The directory where PHP dependencies are installed.'
+    default: './vendor'
     required: false
   # PHPStan options
   phpstan-enable:
@@ -11,20 +15,16 @@ inputs:
     default: 'true'
     required: false
   phpstan-config:
-    description: 'The location of the PHPStan configuration file (phpstan.neon).'
+    description: 'The location of the PHPStan configuration file.'
     default: 'phpstan.neon'
     required: false
   phpstan-memory-limit:
     description: 'The memory limit for PHPStan.'
-    default: '512M'
+    default: '1G'
     required: false      
   phpstan-php-version:
     description: 'The PHP version to use with PHPStan.'
     default: 'latest'
-    required: false
-  phpstan-version:
-    description: 'The version of PHPStan to use.'
-    default: 'composer'
     required: false
   # PHPUnit options 
   phpunit-enable:
@@ -32,31 +32,32 @@ inputs:
     default: 'true'
     required: false
   phpunit-config-file:
-    description: 'The location of the PHPUnit configuration file (phpunit.xml.dist).'
+    description: 'The location of the PHPUnit configuration file.'
     default: 'phpunit.xml.dist'
     required: false
-  phpunit-version:
-    description: 'The version of PHPUnit to use.'
-    default: 'composer'
+  # Pest options
+  pest-enable:
+    description: 'Whether to enable Pest.'
+    default: 'false'
+    required: false
+  pest-config-file:
+    description: 'The location of the Pest/PHPUnit configuration file.'
+    default: 'phpunit.xml.dist'
     required: false
 runs:
   using: 'composite'
   steps:
     - name: 'PHPStan'
       if: ${{ inputs.phpstan-enable == 'true' && inputs.php-version == inputs.phpstan-php-version }}
-      uses: php-actions/phpstan@v3.0.3
-      with:
-        configuration: ${{ inputs.phpstan-config }}
-        memory_limit: ${{ inputs.phpstan-memory-limit }}
-        php_version: ${{ inputs.phpstan-php-version }}
-        version: ${{ inputs.phpstan-version }}
-        php_extensions: intl
+      shell: bash
+      run: ${{ inputs.php-vendor-dir }}/bin/phpstan analyse --configuration ${{ inputs.phpstan-config }} --memory-limit=${{ inputs.phpstan-memory-limit }} >> $GITHUB_OUTPUT
 
     - name: 'PHPUnit'
-      if: ${{ inputs.phpunit-enable == 'true' }}
-      uses: php-actions/phpunit@v4
-      with:
-        configuration: ${{ inputs.phpunit-config }}
-        php_version: ${{ inputs.php-version }}
-        version: ${{ inputs.phpunit-version }}
-        php_extensions: intl
+      if: ${{ inputs.phpunit-enable == 'true' && inputs.pest-enable != 'true' }}
+      shell: bash
+      run: ${{ inputs.php-vendor-dir }}/bin/phpunit --configuration ${{ inputs.phpunit-config-file }}
+
+    - name: 'Pest'
+      if: ${{ inputs.pest-enable == 'true' }}
+      shell: bash
+      run: ${{ inputs.php-vendor-dir }}/bin/pest --configuration ${{ inputs.pest-config-file }}
