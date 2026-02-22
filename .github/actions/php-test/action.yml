@@ -47,17 +47,6 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: 'Setup PHP'
-      uses: 'shivammathur/setup-php@v2'
-      with:
-        php-version: ${{ inputs.php-version }}
-        tools: composer
-        extensions: intl
-
-    - name: 'Install Dependencies'
-      shell: bash
-      run: composer install --no-interaction --prefer-dist
-
     - name: 'PHPStan'
       if: ${{ inputs.phpstan-enable == 'true' && inputs.php-version == inputs.phpstan-php-version }}
       shell: bash
