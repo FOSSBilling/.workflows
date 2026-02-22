@@ -50,7 +50,7 @@ runs:
     - name: 'PHPStan'
       if: ${{ inputs.phpstan-enable == 'true' && inputs.php-version == inputs.phpstan-php-version }}
       shell: bash
-      run: ${{ inputs.php-vendor-dir }}/bin/phpstan analyse --configuration ${{ inputs.phpstan-config }} --memory-limit=${{ inputs.phpstan-memory-limit }} >> $GITHUB_OUTPUT
+      run: ${{ inputs.php-vendor-dir }}/bin/phpstan analyse --configuration ${{ inputs.phpstan-config }} --memory-limit=${{ inputs.phpstan-memory-limit }}
 
     - name: 'PHPUnit'
       if: ${{ inputs.phpunit-enable == 'true' && inputs.pest-enable != 'true' }}
