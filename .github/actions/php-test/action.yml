@@ -44,6 +44,10 @@ inputs:
     description: 'The location of the Pest/PHPUnit configuration file.'
     default: 'phpunit.xml.dist'
     required: false
+  pest-args:
+    description: 'Additional arguments to pass to Pest.'
+    default: ''
+    required: false
 runs:
   using: 'composite'
   steps:
@@ -60,4 +64,4 @@ runs:
     - name: 'Pest'
       if: ${{ inputs.pest-enable == 'true' }}
       shell: bash
-      run: ${{ inputs.php-vendor-dir }}/bin/pest --configuration ${{ inputs.pest-config-file }}
+      run: ${{ inputs.php-vendor-dir }}/bin/pest --configuration ${{ inputs.pest-config-file }} ${{ inputs.pest-args }}
