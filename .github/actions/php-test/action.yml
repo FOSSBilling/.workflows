@@ -62,6 +62,6 @@ runs:
       run: ${{ inputs.php-vendor-dir }}/bin/phpunit --configuration ${{ inputs.phpunit-config-file }}
 
     - name: 'Pest'
-      if: ${{ inputs.pest-enable == 'true' }}
+      if: ${{ inputs.pest-enable == 'true' && inputs.phpunit-enable != 'true' }}
       shell: bash
       run: ${{ inputs.php-vendor-dir }}/bin/pest --configuration ${{ inputs.pest-config-file }} ${{ inputs.pest-args }}
