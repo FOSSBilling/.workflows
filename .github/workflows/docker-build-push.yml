@@ -130,8 +130,10 @@ jobs:
                 artifact_id: artifacts.data.artifacts[0].id,
                 archive_format: 'zip'
               });
-              require('fs').writeFileSync('/tmp/digests.zip', Buffer.from(digests.data));
-              require('child_process').execSync(`unzip -o /tmp/digests.zip -d /tmp/digests`);
+              const { writeFileSync } = await import('fs');
+              const { execSync } = await import('child_process');
+              writeFileSync('/tmp/digests.zip', Buffer.from(digests.data));
+              execSync(`unzip -o /tmp/digests.zip -d /tmp/digests`);
 
               console.log('Deleting already uploaded digests artifact.')
               const result = await github.rest.actions.deleteArtifact({
