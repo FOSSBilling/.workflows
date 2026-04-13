@@ -130,8 +130,8 @@ jobs:
                 artifact_id: artifacts.data.artifacts[0].id,
                 archive_format: 'zip'
               });
-              const { writeFileSync } = await import('fs');
-              const { execSync } = await import('child_process');
+              const { writeFileSync } = await import('node:fs');
+              const { execSync } = await import('node:child_process');
               writeFileSync('/tmp/digests.zip', Buffer.from(digests.data));
               execSync(`unzip -o /tmp/digests.zip -d /tmp/digests`);
 
