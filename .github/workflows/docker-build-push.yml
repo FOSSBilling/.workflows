@@ -109,7 +109,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: 'Check if Digests Artifact Exists and Merge'
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const owner = context.repo.owner;
@@ -130,8 +130,10 @@ jobs:
                 artifact_id: artifacts.data.artifacts[0].id,
                 archive_format: 'zip'
               });
-              require('fs').writeFileSync('/tmp/digests.zip', Buffer.from(digests.data));
-              require('child_process').execSync(`unzip -o /tmp/digests.zip -d /tmp/digests`);
+              const { writeFileSync } = await import('node:fs');
+              const { execSync } = await import('node:child_process');
+              writeFileSync('/tmp/digests.zip', Buffer.from(digests.data));
+              execSync(`unzip -o /tmp/digests.zip -d /tmp/digests`);
 
               console.log('Deleting already uploaded digests artifact.')
               const result = await github.rest.actions.deleteArtifact({
