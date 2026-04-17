@@ -41,6 +41,9 @@ on:
 jobs:
   build:
     name: 'Build and Push Image (${{ matrix.platform }})'
+    permissions:
+      actions: write
+      contents: read
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -58,7 +61,6 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ inputs.tag-latest == 'true' }}
             type=raw,value=${{ inputs.tag-raw }},enable=${{ inputs.tag-raw != '' }}
-
       - name: 'Set up QEMU'
         uses: docker/setup-qemu-action@v4
 
@@ -90,12 +92,12 @@ jobs:
         run: |
           mkdir ./src
           tar -xvf /tmp/build.tar -C ./src
-
       - name: 'Build and Push by Digest'
         id: build
         uses: docker/build-push-action@v7
         with:
-          cache-from: type=gha,scope=${{ github.ref_name }}-${{ matrix.platform }},ignore-error=true
+          # cache-from intentionally omitted because missing remote blobs in GHA cache
+          # can hard-fail buildx during restore (BlobNotFound) on main/release runs.
           cache-to: type=gha,scope=${{ github.ref_name }}-${{ matrix.platform }},ignore-error=true
           context: .
           labels: ${{ steps.meta.outputs.labels }}
@@ -107,21 +109,18 @@ jobs:
           mkdir -p /tmp/digests
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
-
       - name: 'Check if Digests Artifact Exists and Merge'
         uses: actions/github-script@v9
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-
             const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
               owner: owner,
               repo: repo,
               run_id: context.runId,
               name: 'digests'
             });
-
             if (artifacts.data.total_count > 0) {
               console.log('Digests artifact already uploaded - retrieving.');
               const digests = await github.rest.actions.downloadArtifact({
@@ -134,23 +133,20 @@ jobs:
               const { execSync } = await import('node:child_process');
               writeFileSync('/tmp/digests.zip', Buffer.from(digests.data));
               execSync(`unzip -o /tmp/digests.zip -d /tmp/digests`);
-
-              console.log('Deleting already uploaded digests artifact.')
+              console.log('Deleting already uploaded digests artifact.');
               const result = await github.rest.actions.deleteArtifact({
                 owner: owner,
                 repo: repo,
                 artifact_id: artifacts.data.artifacts[0].id
               });
-
-              if (result.status == 204) { 
-                return; 
+              if (result.status === 204) {
+                return;
               } else {
-                core.setFailed('Error occured deleting existing digests artifact');
+                core.setFailed(`Failed to delete existing digests artifact (status: ${result.status})`);
               }
             } else {
               return;
             }
-
       - name: 'Upload Digests'
         uses: actions/upload-artifact@v7
         with:
@@ -161,6 +157,9 @@ jobs:
 
   push:
     name: 'Merge Builds and Push Manifest'
+    permissions:
+      actions: read
+      contents: read
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -184,7 +183,6 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ inputs.tag-latest == 'true' }}
             type=raw,value=${{ inputs.tag-raw }},enable=${{ inputs.tag-raw != '' }}
-
       - name: 'Login to Docker Hub'
         uses: docker/login-action@v4
         with:
