@@ -205,10 +205,14 @@ jobs:
               .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
             const link = (value, label) => {
               if (!value) return 'Unavailable';
-              const url = new URL(value);
-              if (url.protocol !== 'https:' || url.username || url.password) {
-                throw new Error('Invalid deployment URL');
+              const customDomain = value.match(/^([a-z0-9.-]+) \(custom domain(?: - zone (?:name|id): [^)]+)?\)$/i);
+              let url;
+              try {
+                url = new URL(customDomain ? `https://${customDomain[1]}` : value);
+              } catch {
+                return escape(value);
               }
+              if (url.protocol !== 'https:' || url.username || url.password) return escape(value);
               return `<a href="${escape(url.href)}">${label}</a>`;
             };
             const headers = ['Status', ...(preview ? ['Name'] : []), 'Commit', preview ? 'Preview URL' : 'Deployment URL'];
