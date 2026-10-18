@@ -1,16 +1,17 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended",
+    "config:best-practices",
+    "schedule:automergeDaily",
     "schedule:weekly",
+    ":automergeBranch",
     ":automergeDigest",
+    ":automergeLinters",
     ":automergeMinor",
     ":automergeRequireAllStatusChecks",
     ":combinePatchMinorReleases",
-    ":prHourlyLimit2",
+    ":automergeTesters",
+    ":automergeTypes",
     ":rebaseStalePrs"
-  ],
-  "automergeSchedule": ["at any time"],
-  "automergeStrategy": "squash",
-  "automergeType": "branch"
+  ]
 }
