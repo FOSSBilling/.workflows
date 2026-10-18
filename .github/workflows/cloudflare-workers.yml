@@ -95,7 +95,7 @@ jobs:
     permissions: {}
     steps:
       - name: Validate Inputs
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           OPERATION: ${{ inputs.operation }}
           MODE: ${{ inputs.mode }}
@@ -153,7 +153,7 @@ jobs:
     steps:
       - name: Validate Deployment Inputs
         id: command
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           MODE: ${{ inputs.mode }}
           CONFIG_PATH: ${{ inputs.config-path }}
@@ -172,14 +172,14 @@ jobs:
             core.setOutput('command', `${mode === 'preview' ? 'preview' : 'deploy'} --config "${config}"`);
 
       - name: Download Worker Build
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ inputs.artifact-name }}
           path: ${{ inputs.artifact-path }}
 
       - name: Deploy Worker
         id: wrangler
-        uses: cloudflare/wrangler-action@v4
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -189,7 +189,7 @@ jobs:
 
       - name: Add Deployment Summary
         if: ${{ !cancelled() && steps.wrangler.outcome != 'skipped' }}
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           MODE: ${{ inputs.mode }}
           DEPLOYMENT_STATUS: ${{ steps.wrangler.outcome }}
@@ -237,7 +237,7 @@ jobs:
     permissions: {}
     steps:
       - name: Write Preview Metadata
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           PREVIEW_URL: ${{ needs.deploy.outputs.preview-url }}
           PREVIEW_BUILD_URL: ${{ needs.deploy.outputs.preview-build-url }}
@@ -273,7 +273,7 @@ jobs:
             fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'preview-links.json'), JSON.stringify(links));
 
       - name: Upload Preview Metadata
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ inputs.preview-artifact-name }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/preview-links.json
@@ -296,7 +296,7 @@ jobs:
       # Use only API calls and preview metadata. Never check out or execute PR code.
       - name: Find Preview Build
         id: build
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           OPERATION: ${{ inputs.operation }}
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
@@ -379,7 +379,7 @@ jobs:
             }
       - name: Download Preview Links
         if: steps.build.outputs.run-id
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ steps.build.outputs.artifact-id }}
           path: ${{ runner.temp }}/preview-links
@@ -387,7 +387,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Update PR Comment
         if: steps.build.outputs.run-id
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           PREVIEW_RUN_ID: ${{ steps.build.outputs.run-id }}
           PREVIEW_SHA: ${{ steps.build.outputs.sha }}
