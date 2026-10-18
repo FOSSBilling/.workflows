@@ -412,7 +412,7 @@ jobs:
             };
             const worker = process.env.WORKER_NAME;
             const marker = worker ? `<!-- cloudflare-preview:${worker} -->` : '<!-- cloudflare-preview -->';
-            const title = `🚀 Deploying Preview to Cloudflare${worker ? ` (${worker})` : ''} 🚀`;
+            const title = `Deploying Preview to Cloudflare${worker ? ` (${worker})` : ''};
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${process.env.PREVIEW_RUN_ID}`;
             const buildResult = links.buildResult ?? 'success';
             const checksResult = links.checksResult ?? 'success';
