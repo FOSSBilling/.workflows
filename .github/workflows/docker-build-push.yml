@@ -52,7 +52,7 @@ jobs:
     steps:
       - name: 'Docker Meta'
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ inputs.repository-name }}
           flavor: |
@@ -62,19 +62,19 @@ jobs:
             type=raw,value=latest,enable=${{ inputs.tag-latest == 'true' }}
             type=raw,value=${{ inputs.tag-raw }},enable=${{ inputs.tag-raw != '' }}
       - name: 'Set up QEMU'
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
 
       - name: 'Set up Docker Buildx'
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: 'Login to Docker Hub'
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: ${{ secrets.dockerhub-username }}
           password: ${{ secrets.dockerhub-token }}
 
       - name: 'Checkout Dockerfile'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           sparse-checkout: |
             Dockerfile
@@ -82,7 +82,7 @@ jobs:
 
       - name: 'Download Files Required for Build'
         if: ${{ inputs.download-artifact != '' }}
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ inputs.download-artifact }}
           path: '/tmp/'
@@ -94,7 +94,7 @@ jobs:
           tar -xvf /tmp/build.tar -C ./src
       - name: 'Build and Push by Digest'
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           # cache-from intentionally omitted because missing remote blobs in GHA cache
           # can hard-fail buildx during restore (BlobNotFound) on main/release runs.
@@ -110,7 +110,7 @@ jobs:
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
       - name: 'Check if Digests Artifact Exists and Merge'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const owner = context.repo.owner;
@@ -148,7 +148,7 @@ jobs:
               return;
             }
       - name: 'Upload Digests'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: digests
           path: /tmp/digests/*
@@ -164,17 +164,17 @@ jobs:
     needs: build
     steps:
       - name: 'Download Digests'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: digests
           path: /tmp/digests
 
       - name: 'Set up Docker Buildx'
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: 'Docker Meta'
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ inputs.repository-name }}
           flavor: |
@@ -184,7 +184,7 @@ jobs:
             type=raw,value=latest,enable=${{ inputs.tag-latest == 'true' }}
             type=raw,value=${{ inputs.tag-raw }},enable=${{ inputs.tag-raw != '' }}
       - name: 'Login to Docker Hub'
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: ${{ secrets.dockerhub-username }}
           password: ${{ secrets.dockerhub-token }}

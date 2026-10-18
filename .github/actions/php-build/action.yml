@@ -17,7 +17,7 @@ runs:
   using: 'composite'
   steps:
     - name: 'Validate composer.json and composer.lock'
-      uses: php-actions/composer@v6
+      uses: php-actions/composer@8a65f0d3c6a1d17ca4800491a40b5756a4c164f3 # v6
       with:
         command: validate
         php_version: ${{ inputs.php-version }}
@@ -26,14 +26,14 @@ runs:
     - name: 'Cache Composer Dependencies'
       id: composer-cache
       if: ${{ inputs.cache-deps == 'true' }}
-      uses: actions/cache@v6
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
         path: './src/vendor'
 
     - name: 'Install Composer Dependencies'
       if: ${{ steps.composer-cache.outputs.cache-hit != 'true' }}
-      uses: php-actions/composer@v6
+      uses: php-actions/composer@8a65f0d3c6a1d17ca4800491a40b5756a4c164f3 # v6
       with:
         args: ${{ inputs.composer-args }}
         php_version: ${{ inputs.php-version }}
