@@ -140,7 +140,8 @@ jobs:
     if: inputs.operation == 'deploy' && inputs.build-result == 'success' && inputs.checks-result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions: {}
+    permissions:
+      contents: read
     environment:
       name: ${{ inputs.environment }}
       deployment: false
@@ -170,6 +171,13 @@ jobs:
               throw new Error('config-path must be a path without shell metacharacters');
             }
             core.setOutput('command', `${mode === 'preview' ? 'preview' : 'deploy'} --config "${config}"`);
+
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Download Worker Build
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
