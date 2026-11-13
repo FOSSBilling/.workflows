@@ -39,6 +39,10 @@ on:
         description: Optional named environment in the Wrangler configuration.
         default: ''
         type: string
+      node-version:
+        description: Node.js version used to run Wrangler.
+        default: 'lts/*'
+        type: string
       wrangler-version:
         description: Optional Wrangler version; omit to use the wrangler-action default value.
         type: string
@@ -178,6 +182,11 @@ jobs:
           repository: ${{ github.repository }}
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: ${{ inputs.node-version }}
 
       - name: Download Worker Build
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
