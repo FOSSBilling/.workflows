@@ -22,8 +22,6 @@ workflows:
         - 'docker/metadata-action@v6.2.0'
         - 'docker/setup-buildx-action@v4.4.1'
         - 'docker/setup-qemu-action@v4.4.0'
-    '.github/workflows/vercel-build-deploy.yml':
-        - 'actions/checkout@v7.0.1'
     '.github/workflows/verify-lockfile.yml':
         - 'actions/checkout@v7.0.1'
 dependencies:
