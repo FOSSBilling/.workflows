@@ -32,24 +32,26 @@ on:
         description: Directory in which to restore the build artifact.
         default: dist/
         type: string
+      cli:
+        description: "CLI used to deploy the Worker: wrangler (via wrangler-action, driven by config-path) or cf (Cloudflare CLI, driven by cloudflare.config.ts in the repository root; the cf version is the one pinned in the caller's package.json)."
+        default: wrangler
+        type: string
       config-path:
-        description: Wrangler configuration path relative to the workspace.
+        description: Wrangler configuration path relative to the workspace; required when cli is wrangler, ignored when cli is cf.
         type: string
       wrangler-environment:
-        description: Optional named environment in the Wrangler configuration.
+        description: Optional named environment in the Wrangler configuration; only used when cli is wrangler.
         default: ''
         type: string
       node-version:
-        description: Node.js version used to run Wrangler.
+        description: Node.js version used to run the deploy CLI (Wrangler or cf).
         default: 'lts/*'
         type: string
       wrangler-version:
-        description: Optional Wrangler version; omit to use the wrangler-action default value.
+        description: Optional Wrangler version; omit to use the wrangler-action default value; only used when cli is wrangler.
         type: string
       pr-comment:
-        description: >-
-          Maintain comments on matching same-repository PRs for preview build and deployment attempts
-          (requires actions: read and pull-requests: write in the caller).
+        description: "Maintain comments on matching same-repository PRs for preview build and deployment attempts (requires actions: read and pull-requests: write in the caller)."
         default: false
         type: boolean
       pr-base-branch:
@@ -77,7 +79,7 @@ on:
         required: false
     outputs:
       deployment-url:
-        description: URL reported by Wrangler for the deployment.
+        description: URL reported by the deploy CLI (Wrangler or cf) for the deployment.
         value: ${{ jobs.deploy.outputs.deployment-url }}
       preview-url:
         description: Stable branch preview URL (preview mode only).
@@ -108,6 +110,7 @@ jobs:
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
           ARTIFACT_NAME: ${{ inputs.artifact-name }}
           CONFIG_PATH: ${{ inputs.config-path }}
+          CLI: ${{ inputs.cli }}
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
           WORKER_NAME: ${{ inputs.worker-name }}
         with:
@@ -115,6 +118,10 @@ jobs:
             const operation = process.env.OPERATION;
             if (!['deploy', 'sync-pr-comment'].includes(operation)) {
               throw new Error('operation must be deploy or sync-pr-comment');
+            }
+            const cli = process.env.CLI;
+            if (!['wrangler', 'cf'].includes(cli)) {
+              throw new Error('cli must be wrangler or cf');
             }
             if (process.env.WORKER_NAME && !/^[a-zA-Z0-9_-]+$/.test(process.env.WORKER_NAME)) {
               throw new Error('worker-name must contain only letters, numbers, underscores, or hyphens');
@@ -128,7 +135,11 @@ jobs:
               if (!['preview', 'production'].includes(process.env.MODE)) {
                 throw new Error('mode must be preview or production for deploy');
               }
-              for (const name of ['DEPLOY_ENVIRONMENT', 'ARTIFACT_NAME', 'CONFIG_PATH']) {
+              // cf reads cloudflare.config.ts from the repository root, so config-path is wrangler-only.
+              const required = cli === 'cf'
+                ? ['DEPLOY_ENVIRONMENT', 'ARTIFACT_NAME']
+                : ['DEPLOY_ENVIRONMENT', 'ARTIFACT_NAME', 'CONFIG_PATH'];
+              for (const name of required) {
                 if (!process.env[name]?.trim()) throw new Error(`${name} is required for deploy`);
               }
             } else {
@@ -150,31 +161,38 @@ jobs:
       name: ${{ inputs.environment }}
       deployment: false
     outputs:
-      wrangler-result: ${{ steps.wrangler.outcome }}
-      deployment-url: ${{ steps.wrangler.outputs.deployment-url }}
-      preview-url: ${{ steps.wrangler.outputs.preview-url }}
-      preview-build-url: ${{ steps.wrangler.outputs.preview-deployment-url }}
-      preview-name: ${{ steps.wrangler.outputs.preview-name }}
+      deploy-result: ${{ inputs.cli == 'cf' && steps.cf.outcome || steps.wrangler.outcome }}
+      deployment-url: ${{ steps.cf-parse.outputs.deployment-url || steps.wrangler.outputs.deployment-url }}
+      preview-url: ${{ steps.cf-parse.outputs.preview-url || steps.wrangler.outputs.preview-url }}
+      preview-build-url: ${{ steps.cf-parse.outputs.preview-build-url || steps.wrangler.outputs.preview-deployment-url }}
+      preview-name: ${{ steps.cf-parse.outputs.preview-name || steps.wrangler.outputs.preview-name }}
     steps:
       - name: Validate Deployment Inputs
         id: command
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           MODE: ${{ inputs.mode }}
+          CLI: ${{ inputs.cli }}
           CONFIG_PATH: ${{ inputs.config-path }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         with:
           script: |
             const mode = process.env.MODE;
+            const cli = process.env.CLI;
             for (const name of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID']) {
               if (!process.env[name]?.trim()) throw new Error(`${name} is required for deploy`);
             }
-            const config = process.env.CONFIG_PATH;
-            if (!config || /["`$\\\r\n]/.test(config)) {
-              throw new Error('config-path must be a path without shell metacharacters');
+            if (cli === 'cf') {
+              // cf has no --config flag; it reads cloudflare.config.ts from the repository root.
+              core.setOutput('command', mode === 'preview' ? 'previews deploy' : 'deploy');
+            } else {
+              const config = process.env.CONFIG_PATH;
+              if (!config || /["`$\\\r\n]/.test(config)) {
+                throw new Error('config-path must be a path without shell metacharacters');
+              }
+              core.setOutput('command', `${mode === 'preview' ? 'preview' : 'deploy'} --config "${config}"`);
             }
-            core.setOutput('command', `${mode === 'preview' ? 'preview' : 'deploy'} --config "${config}"`);
 
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -196,6 +214,7 @@ jobs:
 
       - name: Deploy Worker
         id: wrangler
+        if: ${{ inputs.cli == 'wrangler' }}
         uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -204,16 +223,140 @@ jobs:
           environment: ${{ inputs.wrangler-environment }}
           command: ${{ steps.command.outputs.command }}
 
-      - name: Add Deployment Summary
-        if: ${{ !cancelled() && steps.wrangler.outcome != 'skipped' }}
+      # cf branch: the project must opt in with cloudflare.config.ts at its root and cf as a
+      # devDependency. Running cf in a project without cloudflare.config.ts would auto-generate
+      # a (possibly wrong) config and mutate package.json.
+      - name: Validate cf Project Configuration
+        if: ${{ inputs.cli == 'cf' }}
+        run: |
+          if [ ! -f cloudflare.config.ts ]; then
+            echo 'cloudflare.config.ts is required at the repository root when cli is cf; run cf migrate first' >&2
+            exit 1
+          fi
+
+      - name: Install Project Dependencies
+        if: ${{ inputs.cli == 'cf' }}
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Deploy with cf
+        id: cf
+        if: ${{ inputs.cli == 'cf' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_SEND_TELEMETRY: 'false'
+          CF_COMMAND: ${{ steps.command.outputs.command }}
+          CF_STDOUT: ${{ runner.temp }}/cf-stdout.log
+          CF_NDJSON: ${{ runner.temp }}/cf-output.ndjson
+          # Fallback for cf versions that print no stdout result for `cf deploy` (<= 1.0.0-rc.2):
+          # the deploy is then recorded as an ND-JSON entry here, the same output-file channel
+          # wrangler-action reads for `wrangler deploy`.
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/cf-output.ndjson
+        # npx --no-install runs the cf version pinned in the caller's package.json and fails
+        # instead of fetching an unpinned latest when the project does not provide one.
+        run: |
+          set -o pipefail
+          npx --no-install cf $CF_COMMAND 2> >(cat >&2) | tee "$CF_STDOUT"
+
+      - name: Parse cf Result
+        id: cf-parse
+        if: ${{ inputs.cli == 'cf' && steps.cf.outcome == 'success' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           MODE: ${{ inputs.mode }}
-          DEPLOYMENT_STATUS: ${{ steps.wrangler.outcome }}
-          DEPLOYMENT_URL: ${{ steps.wrangler.outputs.deployment-url }}
-          PREVIEW_NAME: ${{ steps.wrangler.outputs.preview-name }}
-          PREVIEW_URL: ${{ steps.wrangler.outputs.preview-url }}
-          PREVIEW_BUILD_URL: ${{ steps.wrangler.outputs.preview-deployment-url }}
+          CF_STDOUT: ${{ runner.temp }}/cf-stdout.log
+          CF_NDJSON: ${{ runner.temp }}/cf-output.ndjson
+        with:
+          script: |
+            const fs = require('node:fs');
+            const read = path => { try { return fs.readFileSync(path, 'utf8'); } catch { return ''; } };
+            // cf reports command results as JSON objects carrying type and version on stdout
+            // (for example `cf previews deploy`). Scan from the end so build noise cannot win.
+            const lastResult = text => {
+              for (let i = text.length - 1; i >= 0; i--) {
+                if (text[i] !== '{') continue;
+                let depth = 0, inString = false, escaped = false, end = -1;
+                for (let j = i; j < text.length; j++) {
+                  const c = text[j];
+                  if (inString) {
+                    if (escaped) escaped = false;
+                    else if (c === '\\') escaped = true;
+                    else if (c === '"') inString = false;
+                  } else if (c === '"') inString = true;
+                  else if (c === '{') depth++;
+                  else if (c === '}') { depth--; if (depth === 0) { end = j; break; } }
+                }
+                if (end === -1) continue;
+                try {
+                  const value = JSON.parse(text.slice(i, end + 1));
+                  if (value && typeof value === 'object' && !Array.isArray(value) &&
+                      value.type && value.version !== undefined) return value;
+                } catch {}
+              }
+              return null;
+            };
+            const https = value => {
+              const url = new URL(value);
+              if (url.protocol !== 'https:' || url.username || url.password) {
+                throw new Error(`Invalid URL reported by cf: ${value}`);
+              }
+              return value;
+            };
+            // Targets may be bare hostnames (for example *.workers.dev) or custom domains with an
+            // annotation, for example "example.com (custom domain - zone name: example.com)".
+            // Strip the annotation like the deployment summary does, then add the scheme.
+            const url = value => {
+              if (!value) return '';
+              const trimmed = String(value).trim();
+              const customDomain = trimmed.match(/^([a-z0-9.-]+) \(custom domain(?: - zone (?:name|id): [^)]+)?\)$/i);
+              const host = customDomain ? customDomain[1] : trimmed;
+              return https(/^[a-z][a-z0-9+.-]*:\/\//i.test(host) ? host : `https://${host}`);
+            };
+            const pick = list => {
+              if (!Array.isArray(list)) return '';
+              const value = list.find(item => typeof item === 'string' && item.trim());
+              return value ? url(value) : '';
+            };
+            // Primary source: cf's own JSON result on stdout. Fallback: the ND-JSON output-file
+            // record, used only when stdout carries no result (production `cf deploy` on
+            // cf <= 1.0.0-rc.2). Once cf prints deploy results on stdout, that wins here.
+            const results = [lastResult(read(process.env.CF_STDOUT))].filter(Boolean);
+            if (results.length === 0) {
+              const record = lastResult(read(process.env.CF_NDJSON));
+              if (record) results.push(record);
+            }
+            const wanted = process.env.MODE === 'preview' ? 'preview' : 'deploy';
+            const r = results.find(x => x.type === wanted) || results[0];
+            if (!r) throw new Error('cf did not report a result');
+            const previewUrl = pick(r.preview_urls) || (r.preview_alias_url ? url(r.preview_alias_url) : '');
+            const buildUrl = pick(r.deployment_urls) || (r.preview_url ? url(r.preview_url) : '');
+            const deploymentUrl = url((r.targets || []).find(v => typeof v === 'string' && v.trim())) ||
+              pick(r.deployment_urls) || (r.preview_url ? url(r.preview_url) : '');
+            if (process.env.MODE === 'preview') {
+              if (!previewUrl || !buildUrl) throw new Error('cf preview result is missing preview_urls or deployment_urls');
+              core.setOutput('preview-name', String(r.preview_name ?? ''));
+              core.setOutput('preview-url', previewUrl);
+              core.setOutput('preview-build-url', buildUrl);
+            } else {
+              if (!deploymentUrl) throw new Error('cf deploy result is missing its target URL');
+              core.setOutput('deployment-url', deploymentUrl);
+            }
+
+      - name: Add Deployment Summary
+        if: ${{ !cancelled() && (steps.wrangler.outcome != 'skipped' || steps.cf.outcome != 'skipped') }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          MODE: ${{ inputs.mode }}
+          DEPLOYMENT_STATUS: ${{ inputs.cli == 'cf' && steps.cf.outcome || steps.wrangler.outcome }}
+          DEPLOYMENT_URL: ${{ steps.cf-parse.outputs.deployment-url || steps.wrangler.outputs.deployment-url }}
+          PREVIEW_NAME: ${{ steps.cf-parse.outputs.preview-name || steps.wrangler.outputs.preview-name }}
+          PREVIEW_URL: ${{ steps.cf-parse.outputs.preview-url || steps.wrangler.outputs.preview-url }}
+          PREVIEW_BUILD_URL: ${{ steps.cf-parse.outputs.preview-build-url || steps.wrangler.outputs.preview-deployment-url }}
         with:
           script: |
             const preview = process.env.MODE === 'preview';
@@ -264,7 +407,7 @@ jobs:
           PREVIEW_BUILD_URL: ${{ needs.deploy.outputs.preview-build-url }}
           BUILD_RESULT: ${{ inputs.build-result }}
           CHECKS_RESULT: ${{ inputs.checks-result }}
-          DEPLOY_RESULT: ${{ needs.deploy.outputs.wrangler-result == 'success' && 'success' || needs.deploy.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.outputs.deploy-result == 'success' && 'success' || needs.deploy.result }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           PR_COMMENT: ${{ inputs.pr-comment }}
           WORKER_NAME: ${{ inputs.worker-name }}
