@@ -33,7 +33,7 @@ on:
         default: dist/
         type: string
       cli:
-        description: CLI used to deploy the Worker: wrangler (via wrangler-action, driven by config-path) or cf (Cloudflare CLI, driven by cloudflare.config.ts in the repository root).
+        description: "CLI used to deploy the Worker: wrangler (via wrangler-action, driven by config-path) or cf (Cloudflare CLI, driven by cloudflare.config.ts in the repository root)."
         default: wrangler
         type: string
       cf-version:
@@ -55,7 +55,7 @@ on:
         description: Optional Wrangler version; omit to use the wrangler-action default value; only used when cli is wrangler.
         type: string
       pr-comment:
-        description: Maintain comments on matching same-repository PRs for preview build and deployment attempts (requires actions: read and pull-requests: write in the caller).
+        description: "Maintain comments on matching same-repository PRs for preview build and deployment attempts (requires actions: read and pull-requests: write in the caller)."
         default: false
         type: boolean
       pr-base-branch:
