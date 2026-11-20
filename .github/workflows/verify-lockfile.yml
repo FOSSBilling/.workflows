@@ -1,4 +1,4 @@
-name: Verify workflow lockfile
+name: Verify Workflow Lockfile
 on:
   push:
     paths:
