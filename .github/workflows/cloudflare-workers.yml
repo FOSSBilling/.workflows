@@ -29,12 +29,20 @@ on:
         description: Build artifact uploaded by the caller in this run.
         type: string
       artifact-path:
-        description: Directory in which to restore the build artifact.
+        description: Directory in which to restore the build artifact; must be .cloudflare/output/ when prebuilt is true.
         default: dist/
         type: string
+      prebuilt:
+        description: "Deploy the restored cf Build Output without building from source (cf deploy --prebuilt / cf previews deploy --prebuilt); only supported with cli: cf. The uploaded artifact must contain the Build Output matching mode: a production build for mode: production, or a preview build (isPreview: true, produced by cf previews deploy) for mode: preview; cf refuses to cross-deploy preview and production Build Output, so callers with a single production build should set prebuilt only on their production deploy call."
+        default: false
+        type: boolean
       cli:
         description: "CLI used to deploy the Worker: wrangler (via wrangler-action, driven by config-path) or cf (Cloudflare CLI, driven by cloudflare.config.ts in the repository root; the cf version is the one pinned in the caller's package.json)."
         default: wrangler
+        type: string
+      cf-mode:
+        description: "Mode passed to cf via --mode when prebuilt is true; must match the mode the Build Output was built with (framework builds record it as buildContext.mode in .cloudflare/output/v1/config.json). Only used when cli is cf and prebuilt is true."
+        default: production
         type: string
       config-path:
         description: Wrangler configuration path relative to the workspace; required when cli is wrangler, ignored when cli is cf.
@@ -109,8 +117,11 @@ jobs:
           CHECKS_RESULT: ${{ inputs.checks-result }}
           DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
           ARTIFACT_NAME: ${{ inputs.artifact-name }}
+          ARTIFACT_PATH: ${{ inputs.artifact-path }}
           CONFIG_PATH: ${{ inputs.config-path }}
           CLI: ${{ inputs.cli }}
+          PREBUILT: ${{ inputs.prebuilt }}
+          CF_MODE: ${{ inputs.cf-mode }}
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
           WORKER_NAME: ${{ inputs.worker-name }}
         with:
@@ -125,6 +136,20 @@ jobs:
             }
             if (process.env.WORKER_NAME && !/^[a-zA-Z0-9_-]+$/.test(process.env.WORKER_NAME)) {
               throw new Error('worker-name must contain only letters, numbers, underscores, or hyphens');
+            }
+            if (!/^[a-zA-Z0-9_-]+$/.test(process.env.CF_MODE)) {
+              throw new Error('cf-mode must contain only letters, numbers, underscores, or hyphens');
+            }
+            const prebuilt = process.env.PREBUILT === 'true';
+            if (prebuilt) {
+              if (cli !== 'cf') {
+                throw new Error('prebuilt is only supported with cli: cf');
+              }
+              // cf --prebuilt reads .cloudflare/output next to cloudflare.config.ts in the checkout.
+              const artifactPath = (process.env.ARTIFACT_PATH || '').replace(/\/+$/, '');
+              if (artifactPath !== '.cloudflare/output') {
+                throw new Error('artifact-path must be .cloudflare/output/ when prebuilt is true');
+              }
             }
             if (operation === 'deploy') {
               for (const name of ['BUILD_RESULT', 'CHECKS_RESULT']) {
@@ -173,6 +198,8 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
           CLI: ${{ inputs.cli }}
+          PREBUILT: ${{ inputs.prebuilt }}
+          CF_MODE: ${{ inputs.cf-mode }}
           CONFIG_PATH: ${{ inputs.config-path }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -185,7 +212,19 @@ jobs:
             }
             if (cli === 'cf') {
               // cf has no --config flag; it reads cloudflare.config.ts from the repository root.
-              core.setOutput('command', mode === 'preview' ? 'previews deploy' : 'deploy');
+              const command = mode === 'preview' ? 'previews deploy' : 'deploy';
+              if (process.env.PREBUILT === 'true') {
+                // --prebuilt deploys the restored Build Output (.cloudflare/output) without
+                // building. --mode must match the mode the output was built with; the
+                // dry-run validation skips that check.
+                const cfMode = process.env.CF_MODE;
+                if (!/^[a-zA-Z0-9_-]+$/.test(cfMode)) {
+                  throw new Error('cf-mode must contain only letters, numbers, underscores, or hyphens');
+                }
+                core.setOutput('command', `${command} --prebuilt --mode ${cfMode}`);
+              } else {
+                core.setOutput('command', command);
+              }
             } else {
               const config = process.env.CONFIG_PATH;
               if (!config || /["`$\\\r\n]/.test(config)) {
