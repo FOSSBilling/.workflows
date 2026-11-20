@@ -307,15 +307,21 @@ jobs:
               }
               return value;
             };
+            // Targets may be bare hostnames (for example *.workers.dev) or custom domains with an
+            // annotation, for example "example.com (custom domain - zone name: example.com)".
+            // Strip the annotation like the deployment summary does, then add the scheme.
+            const url = value => {
+              if (!value) return '';
+              const trimmed = String(value).trim();
+              const customDomain = trimmed.match(/^([a-z0-9.-]+) \(custom domain(?: - zone (?:name|id): [^)]+)?\)$/i);
+              const host = customDomain ? customDomain[1] : trimmed;
+              return https(/^[a-z][a-z0-9+.-]*:\/\//i.test(host) ? host : `https://${host}`);
+            };
             const pick = list => {
               if (!Array.isArray(list)) return '';
               const value = list.find(item => typeof item === 'string' && item.trim());
-              return value ? https(value.trim()) : '';
+              return value ? url(value) : '';
             };
-            // Deploy targets may be bare hostnames (for example *.workers.dev).
-            const target = value => value
-              ? https(/^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value}`)
-              : '';
             // Primary source: cf's own JSON result on stdout. Fallback: the ND-JSON output-file
             // record, used only when stdout carries no result (production `cf deploy` on
             // cf <= 1.0.0-rc.2). Once cf prints deploy results on stdout, that wins here.
@@ -327,10 +333,10 @@ jobs:
             const wanted = process.env.MODE === 'preview' ? 'preview' : 'deploy';
             const r = results.find(x => x.type === wanted) || results[0];
             if (!r) throw new Error('cf did not report a result');
-            const previewUrl = pick(r.preview_urls) || (r.preview_alias_url ? https(r.preview_alias_url) : '');
-            const buildUrl = pick(r.deployment_urls) || (r.preview_url ? https(r.preview_url) : '');
-            const deploymentUrl = target((r.targets || []).find(v => typeof v === 'string' && v.trim())) ||
-              pick(r.deployment_urls) || (r.preview_url ? https(r.preview_url) : '');
+            const previewUrl = pick(r.preview_urls) || (r.preview_alias_url ? url(r.preview_alias_url) : '');
+            const buildUrl = pick(r.deployment_urls) || (r.preview_url ? url(r.preview_url) : '');
+            const deploymentUrl = url((r.targets || []).find(v => typeof v === 'string' && v.trim())) ||
+              pick(r.deployment_urls) || (r.preview_url ? url(r.preview_url) : '');
             if (process.env.MODE === 'preview') {
               if (!previewUrl || !buildUrl) throw new Error('cf preview result is missing preview_urls or deployment_urls');
               core.setOutput('preview-name', String(r.preview_name ?? ''));
