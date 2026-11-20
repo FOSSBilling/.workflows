@@ -10,6 +10,4 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Check workflow files
-        uses: docker://rhysd/actionlint:latest@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
-        with:
-          args: -color -shellcheck=""
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/repo" -w /repo rhysd/actionlint:latest@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color -shellcheck=""
