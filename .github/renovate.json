@@ -12,6 +12,7 @@
     ":combinePatchMinorReleases",
     ":automergeTesters",
     ":automergeTypes",
+    ":maintainLockFilesWeekly",
     ":rebaseStalePrs"
   ]
 }
