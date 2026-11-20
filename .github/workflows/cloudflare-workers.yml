@@ -33,21 +33,15 @@ on:
         default: dist/
         type: string
       cli:
-        description: >-
-          CLI used to deploy the Worker: wrangler (via wrangler-action, driven by config-path) or
-          cf (Cloudflare CLI, driven by cloudflare.config.ts in the repository root).
+        description: CLI used to deploy the Worker: wrangler (via wrangler-action, driven by config-path) or cf (Cloudflare CLI, driven by cloudflare.config.ts in the repository root).
         default: wrangler
         type: string
       cf-version:
-        description: >-
-          Cloudflare CLI (cf) version installed from npm when cli is cf; must be an exact
-          pinned semantic version (for example 1.0.0-rc.2), never a floating tag like latest.
+        description: Cloudflare CLI (cf) version installed from npm when cli is cf; must be an exact pinned semantic version (for example 1.0.0-rc.2), never a floating tag like latest.
         default: 1.0.0-rc.2
         type: string
       config-path:
-        description: >-
-          Wrangler configuration path relative to the workspace; required when cli is wrangler,
-          ignored when cli is cf.
+        description: Wrangler configuration path relative to the workspace; required when cli is wrangler, ignored when cli is cf.
         type: string
       wrangler-environment:
         description: Optional named environment in the Wrangler configuration; only used when cli is wrangler.
@@ -61,9 +55,7 @@ on:
         description: Optional Wrangler version; omit to use the wrangler-action default value; only used when cli is wrangler.
         type: string
       pr-comment:
-        description: >-
-          Maintain comments on matching same-repository PRs for preview build and deployment attempts
-          (requires actions: read and pull-requests: write in the caller).
+        description: Maintain comments on matching same-repository PRs for preview build and deployment attempts (requires actions: read and pull-requests: write in the caller).
         default: false
         type: boolean
       pr-base-branch:
