@@ -33,12 +33,8 @@ on:
         default: dist/
         type: string
       cli:
-        description: "CLI used to deploy the Worker: wrangler (via wrangler-action, driven by config-path) or cf (Cloudflare CLI, driven by cloudflare.config.ts in the repository root)."
+        description: "CLI used to deploy the Worker: wrangler (via wrangler-action, driven by config-path) or cf (Cloudflare CLI, driven by cloudflare.config.ts in the repository root; the cf version is the one pinned in the caller's package.json)."
         default: wrangler
-        type: string
-      cf-version:
-        description: Cloudflare CLI (cf) version installed from npm when cli is cf; must be an exact pinned semantic version (for example 1.0.0-rc.2), never a floating tag like latest.
-        default: 1.0.0-rc.2
         type: string
       config-path:
         description: Wrangler configuration path relative to the workspace; required when cli is wrangler, ignored when cli is cf.
@@ -115,7 +111,6 @@ jobs:
           ARTIFACT_NAME: ${{ inputs.artifact-name }}
           CONFIG_PATH: ${{ inputs.config-path }}
           CLI: ${{ inputs.cli }}
-          CF_VERSION: ${{ inputs.cf-version }}
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
           WORKER_NAME: ${{ inputs.worker-name }}
         with:
@@ -146,12 +141,6 @@ jobs:
                 : ['DEPLOY_ENVIRONMENT', 'ARTIFACT_NAME', 'CONFIG_PATH'];
               for (const name of required) {
                 if (!process.env[name]?.trim()) throw new Error(`${name} is required for deploy`);
-              }
-              if (cli === 'cf') {
-                const version = process.env.CF_VERSION?.trim();
-                if (!version || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
-                  throw new Error('cf-version must be an exact pinned semantic version (for example 1.0.0-rc.2) when cli is cf');
-                }
               }
             } else {
               if (!['workflow_run', 'pull_request_target'].includes(context.eventName)) {
@@ -234,8 +223,9 @@ jobs:
           environment: ${{ inputs.wrangler-environment }}
           command: ${{ steps.command.outputs.command }}
 
-      # cf branch: the project must opt in with cloudflare.config.ts at its root. Running cf in a
-      # project without one would auto-generate a (possibly wrong) config and mutate package.json.
+      # cf branch: the project must opt in with cloudflare.config.ts at its root and cf as a
+      # devDependency. Running cf in a project without cloudflare.config.ts would auto-generate
+      # a (possibly wrong) config and mutate package.json.
       - name: Validate cf Project Configuration
         if: ${{ inputs.cli == 'cf' }}
         run: |
@@ -253,12 +243,6 @@ jobs:
             npm install --no-audit --no-fund
           fi
 
-      - name: Install Cloudflare CLI
-        if: ${{ inputs.cli == 'cf' }}
-        env:
-          CF_VERSION: ${{ inputs.cf-version }}
-        run: npm install --global "cf@$CF_VERSION"
-
       - name: Deploy with cf
         id: cf
         if: ${{ inputs.cli == 'cf' }}
@@ -271,9 +255,11 @@ jobs:
           CF_NDJSON: ${{ runner.temp }}/cf-output.ndjson
           # Deploys delegated to the bundled Wrangler report ND-JSON records here.
           WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/cf-output.ndjson
+        # npx --no-install runs the cf version pinned in the caller's package.json and fails
+        # instead of fetching an unpinned latest when the project does not provide one.
         run: |
           set -o pipefail
-          cf $CF_COMMAND 2> >(cat >&2) | tee "$CF_STDOUT"
+          npx --no-install cf $CF_COMMAND 2> >(cat >&2) | tee "$CF_STDOUT"
 
       - name: Parse cf Result
         id: cf-parse
