@@ -24,6 +24,8 @@ workflows:
         - 'docker/setup-qemu-action@v4.4.0'
     '.github/workflows/vercel-build-deploy.yml':
         - 'actions/checkout@v7.0.1'
+    '.github/workflows/verify-lockfile.yml':
+        - 'actions/checkout@v7.0.1'
 dependencies:
     'actions/checkout@v7.0.1':
         ref: 'v7.0.1'
