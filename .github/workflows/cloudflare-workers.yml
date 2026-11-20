@@ -253,7 +253,9 @@ jobs:
           CF_COMMAND: ${{ steps.command.outputs.command }}
           CF_STDOUT: ${{ runner.temp }}/cf-stdout.log
           CF_NDJSON: ${{ runner.temp }}/cf-output.ndjson
-          # Deploys delegated to the bundled Wrangler report ND-JSON records here.
+          # Fallback for cf versions that print no stdout result for `cf deploy` (<= 1.0.0-rc.2):
+          # the deploy is then recorded as an ND-JSON entry here, the same output-file channel
+          # wrangler-action reads for `wrangler deploy`.
           WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/cf-output.ndjson
         # npx --no-install runs the cf version pinned in the caller's package.json and fails
         # instead of fetching an unpinned latest when the project does not provide one.
@@ -273,9 +275,8 @@ jobs:
           script: |
             const fs = require('node:fs');
             const read = path => { try { return fs.readFileSync(path, 'utf8'); } catch { return ''; } };
-            // cf prints command results as JSON on stdout; deploys that go through the bundled
-            // Wrangler are reported as ND-JSON records in WRANGLER_OUTPUT_FILE_PATH. Both carry
-            // a type and a version field. Scan from the end so build noise cannot win.
+            // cf reports command results as JSON objects carrying type and version on stdout
+            // (for example `cf previews deploy`). Scan from the end so build noise cannot win.
             const lastResult = text => {
               for (let i = text.length - 1; i >= 0; i--) {
                 if (text[i] !== '{') continue;
@@ -311,30 +312,32 @@ jobs:
               const value = list.find(item => typeof item === 'string' && item.trim());
               return value ? https(value.trim()) : '';
             };
-            const pickTarget = list => {
-              if (!Array.isArray(list)) return '';
-              const value = list.find(item => typeof item === 'string' && item.trim());
-              // deploy targets may be bare hostnames (for example *.workers.dev).
-              return value ? https(/^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value.trim() : `https://${value.trim()}`) : '';
-            };
-            const results = [lastResult(read(process.env.CF_STDOUT)), lastResult(read(process.env.CF_NDJSON))].filter(Boolean);
-            const preview = results.find(r => r.type === 'preview');
-            const deploy = results.find(r => r.type === 'deploy');
-            const upload = results.find(r => r.type === 'version-upload');
+            // Deploy targets may be bare hostnames (for example *.workers.dev).
+            const target = value => value
+              ? https(/^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : `https://${value}`)
+              : '';
+            // Primary source: cf's own JSON result on stdout. Fallback: the ND-JSON output-file
+            // record, used only when stdout carries no result (production `cf deploy` on
+            // cf <= 1.0.0-rc.2). Once cf prints deploy results on stdout, that wins here.
+            const results = [lastResult(read(process.env.CF_STDOUT))].filter(Boolean);
+            if (results.length === 0) {
+              const record = lastResult(read(process.env.CF_NDJSON));
+              if (record) results.push(record);
+            }
+            const wanted = process.env.MODE === 'preview' ? 'preview' : 'deploy';
+            const r = results.find(x => x.type === wanted) || results[0];
+            if (!r) throw new Error('cf did not report a result');
+            const previewUrl = pick(r.preview_urls) || (r.preview_alias_url ? https(r.preview_alias_url) : '');
+            const buildUrl = pick(r.deployment_urls) || (r.preview_url ? https(r.preview_url) : '');
+            const deploymentUrl = target((r.targets || []).find(v => typeof v === 'string' && v.trim())) ||
+              pick(r.deployment_urls) || (r.preview_url ? https(r.preview_url) : '');
             if (process.env.MODE === 'preview') {
-              const r = preview || upload;
-              if (!r) throw new Error('cf did not report a preview result');
-              const previewUrl = pick(r.preview_urls) || (r.preview_alias_url ? https(r.preview_alias_url) : '');
-              const buildUrl = pick(r.deployment_urls) || (r.preview_url ? https(r.preview_url) : '');
               if (!previewUrl || !buildUrl) throw new Error('cf preview result is missing preview_urls or deployment_urls');
               core.setOutput('preview-name', String(r.preview_name ?? ''));
               core.setOutput('preview-url', previewUrl);
               core.setOutput('preview-build-url', buildUrl);
             } else {
-              const r = deploy || preview || upload;
-              if (!r) throw new Error('cf did not report a deploy result');
-              const deploymentUrl = pickTarget(r.targets || r.deployment_urls || r.preview_urls);
-              if (!deploymentUrl) throw new Error('cf deploy result is missing targets');
+              if (!deploymentUrl) throw new Error('cf deploy result is missing its target URL');
               core.setOutput('deployment-url', deploymentUrl);
             }
 
