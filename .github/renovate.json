@@ -14,5 +14,13 @@
     ":automergeTypes",
     ":maintainLockFilesWeekly",
     ":rebaseStalePrs"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["gh extension install (?<depName>[\\w.-]+/[\\w.-]+) --pin (?<currentValue>\\S+)"],
+      "datasourceTemplate": "github-releases"
+    }
   ]
 }
