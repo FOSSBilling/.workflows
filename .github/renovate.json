@@ -2,7 +2,6 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:best-practices",
-    "schedule:automergeDaily",
     "schedule:weekly",
     ":automergeBranch",
     ":automergeDigest",
@@ -12,9 +11,9 @@
     ":combinePatchMinorReleases",
     ":automergeTesters",
     ":automergeTypes",
-    ":maintainLockFilesWeekly",
     ":rebaseStalePrs"
   ],
+  "automergeSchedule": ["at any time"],
   "customManagers": [
     {
       "customType": "regex",
