@@ -1,22 +1,3 @@
-<h1 align="center">
-  <br>
-  <a href="https://fossbilling.org/">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/FOSSBilling/branding/refs/heads/main/assets/dark-background/fossbilling-logo.svg">
-      <img alt="FOSSBilling logo" src="https://raw.githubusercontent.com/FOSSBilling/branding/refs/heads/main/assets/light-background/fossbilling-logo.svg" height="100">
-    </picture>
-  </a>
-  <br>
-</h1>
-
-<div align="center">
-
-[![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
-[![Discord](https://img.shields.io/discord/747432407757488179?color=%237289FA&logo=discord&logoColor=%23FFF)](https://fossbilling.org/discord)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor_Covenant-3.svg)](https://fossbilling.org/docs/contribution-handbook/code-of-conduct)
-
-</div>
-
 # FOSSBilling Shared Workflows
 
 This repository hosts the reusable GitHub Actions workflows shared across the [FOSSBilling](https://fossbilling.org/) organization. Instead of duplicating CI/CD logic in every project, call the workflows here from other repositories:
