@@ -34,11 +34,11 @@ jobs:
 
 Use `deployment-url` for production. For previews, `preview-url` follows the branch and `preview-build-url` points to a specific build.
 
-PR comment updates read build metadata and preview URLs via the GitHub API without executing PR code.
+Use `sync-pr-comment` on `pull_request` for opened, reopened, and synchronized same-repository PRs, or on `workflow_run` for completed push builds. Give the caller `actions: read`, `contents: read`, and `pull-requests: write`. PR comment updates read build metadata and preview URLs via the GitHub API without executing PR code.
 
 See the `inputs:` and `outputs:` blocks at the top of [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) for the full list, including `pr-comment`, `worker-name`, and `prebuilt`.
 
-Use `delete-preview` on `pull_request_target` with `types: [closed]` for same-repository PRs, or on `delete` for branches that are still absent when cleanup runs. Set `worker-name` and `environment`, pass both Cloudflare secrets as shown above, and give the calling job `contents: read` and the same concurrency group as the branch's preview deployment.
+Use `delete-preview` on `pull_request` with `types: [closed]` for same-repository PRs, or on `delete` for branches that are still absent when cleanup runs. Set `worker-name` and `environment`, pass both Cloudflare secrets as shown above, and give the calling job `contents: read` and the same concurrency group as the branch's preview deployment.
 
 ## Dependency pinning and updates
 

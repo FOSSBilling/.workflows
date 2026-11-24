@@ -163,8 +163,8 @@ jobs:
                 if (!process.env[name]?.trim()) throw new Error(`${name} is required for deploy`);
               }
             } else if (operation === 'sync-pr-comment') {
-              if (!['workflow_run', 'pull_request_target'].includes(context.eventName)) {
-                throw new Error('sync-pr-comment requires a workflow_run or pull_request_target event');
+              if (!['workflow_run', 'pull_request'].includes(context.eventName)) {
+                throw new Error('sync-pr-comment requires a workflow_run or pull_request event');
               }
               if (!process.env.BUILD_WORKFLOW.trim()) throw new Error('build-workflow is required for sync-pr-comment');
             } else {
@@ -177,7 +177,7 @@ jobs:
     needs: validate
     if: >-
       inputs.operation == 'delete-preview' &&
-      ((github.event_name == 'pull_request_target' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      ((github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository) ||
        (github.event_name == 'delete' && github.event.ref_type == 'branch' && github.event.ref != '' && github.event.ref != github.event.repository.default_branch))
     runs-on: ubuntu-slim
     timeout-minutes: 10
@@ -203,7 +203,7 @@ jobs:
             core.notice(`Skipping preview cleanup because ${ref} exists again`);
             return false;
       - name: Delete Preview
-        if: github.event_name == 'pull_request_target' || steps.branch.outputs.result == 'true'
+        if: github.event_name == 'pull_request' || steps.branch.outputs.result == 'true'
         env:
           # renovate: datasource=npm depName=cf
           CF_VERSION: '1.0.0-rc.2'
