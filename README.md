@@ -40,6 +40,8 @@ See the `inputs:` and `outputs:` blocks at the top of [`cloudflare-workers.yml`]
 
 Use `delete-preview` on `pull_request` with `types: [closed]` for same-repository PRs, or on `delete` for branches that are still absent when cleanup runs. Set `worker-name` and `environment`, pass both Cloudflare secrets as shown above, and give the calling job `contents: read` and the same concurrency group as the branch's preview deployment.
 
+For a named static preview, a trusted `workflow_run` caller authorizes the operation and sets `cli: cf`, `mode: preview`, and `prebuilt: false` (the default). Set `preview-name` to a lowercase slug starting with a letter or digit and containing only letters, digits, and hyphens, such as `forkpreview-123`. Set `artifact-name` to the checked static artifact from the caller’s current run. Use the returned `preview-build-url` for a commit-specific link. To clean up, pass the same name with `operation: delete-preview`, `worker-name`, and the preview environment.
+
 ## Dependency pinning and updates
 
 Third-party actions are pinned as strictly as possible:
