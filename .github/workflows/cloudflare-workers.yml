@@ -102,7 +102,7 @@ on:
         value: ${{ jobs.reviewed.outputs.preview-url || jobs.deploy.outputs.preview-url }}
       preview-build-url:
         description: Immutable preview build URL (preview mode only).
-        value: ${{ jobs.reviewed.outputs.url || jobs.deploy.outputs.preview-build-url }}
+        value: ${{ jobs.reviewed.outputs.preview-build-url || jobs.deploy.outputs.preview-build-url }}
       preview-name:
         description: Preview name (preview mode only).
         value: ${{ jobs.reviewed.outputs.preview-name || jobs.deploy.outputs.preview-name }}
@@ -198,7 +198,7 @@ jobs:
     name: Delete Cloudflare Preview
     needs: validate
     if: >-
-      inputs.reviewed-pr == 0 && inputs.operation == 'delete-preview' &&
+      inputs.operation == 'delete-preview' &&
       ((github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository) ||
        (github.event_name == 'delete' && github.event.ref_type == 'branch' && github.event.ref != '' && github.event.ref != github.event.repository.default_branch))
     runs-on: ubuntu-slim
@@ -226,18 +226,16 @@ jobs:
             return false;
       - name: Delete Preview
         if: github.event_name == 'pull_request' || steps.branch.outputs.result == 'true'
-        env:
+        env: &delete-env
           # renovate: datasource=npm depName=cf
           CF_VERSION: '1.0.0-rc.2'
-          PREVIEW_NAME: ${{ github.event.pull_request.head.ref || github.event.ref }}
+          PREVIEW_NAME: ${{ inputs.reviewed-pr && format('forkpreview-{0}', inputs.reviewed-pr) || github.event.pull_request.head.ref || github.event.ref }}
           WORKER_NAME: ${{ inputs.worker-name }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         shell: bash
         run: &delete-preview |
-          cli=("$GITHUB_WORKSPACE/node_modules/.bin/cf")
-          if [[ -n "${CF_VERSION:-}" ]]; then cli=(npx --yes --ignore-scripts "cf@$CF_VERSION"); fi
-          if ! output=$("${cli[@]}" previews delete "$PREVIEW_NAME" --worker "$WORKER_NAME" --force 2>&1) && [[ "$output" != *'[10025] '* ]]; then
+          if ! output=$(npx --yes --ignore-scripts "cf@$CF_VERSION" previews delete "$PREVIEW_NAME" --worker "$WORKER_NAME" --force 2>&1) && [[ "$output" != *'[10025] '* ]]; then
             printf '%s\n' "$output" >&2
             exit 1
           fi
@@ -350,7 +348,7 @@ jobs:
       - &parse-cf
         name: Parse cf Result
         id: cf-parse
-        if: inputs.cli == 'cf'
+        if: inputs.cli == 'cf' && inputs.operation == 'deploy'
         uses: actions/github-script@v9.0.0
         env:
           MODE: ${{ inputs.mode }}
@@ -408,7 +406,7 @@ jobs:
               return url(value);
             };
             let r = lastResult(fs.readFileSync(process.env.CF_STDOUT, 'utf8'));
-            if (!r || process.env.REVIEWED_PR !== '0') {
+            if (!r) {
               try {
                 r = lastResult(fs.readFileSync(process.env.CF_NDJSON, 'utf8'));
               } catch (error) {
@@ -416,7 +414,7 @@ jobs:
               }
             }
             if (!r) throw new Error('cf did not report a result');
-            if (process.env.REVIEWED_PR !== '0' && (r.worker_name !== process.env.WORKER_NAME ||
+            if (process.env.REVIEWED_PR !== '0' && ((r.worker_name && r.worker_name !== process.env.WORKER_NAME) ||
                 r.preview_name !== `forkpreview-${process.env.REVIEWED_PR}`)) {
               throw new Error('cf reported an unexpected reviewed preview name');
             }
@@ -478,7 +476,9 @@ jobs:
   reviewed:
     name: Update reviewed Cloudflare preview
     needs: validate
-    if: inputs.reviewed-pr > 0 && inputs.build-result == 'success' && inputs.checks-result == 'success'
+    if: >-
+      inputs.reviewed-pr > 0 && (inputs.operation == 'delete-preview' ||
+      (inputs.build-result == 'success' && inputs.checks-result == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -487,7 +487,7 @@ jobs:
     outputs:
       preview-name: ${{ steps.cf-parse.outputs.preview-name }}
       preview-url: ${{ steps.cf-parse.outputs.preview-url }}
-      url: ${{ steps.cf-parse.outputs.preview-build-url }}
+      preview-build-url: ${{ steps.cf-parse.outputs.preview-build-url }}
     steps:
       - *checkout
       - uses: actions/setup-node@v7.1.0
@@ -495,6 +495,7 @@ jobs:
           node-version: ${{ inputs.node-version }}
           package-manager-cache: false
       - name: Install upstream preview CLI
+        if: inputs.operation == 'deploy'
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Restore checked static files
         if: inputs.operation == 'deploy'
@@ -511,35 +512,25 @@ jobs:
         with:
           script: |
             const target = await require('./' + process.env.MODULE)({ github, context });
-            const publish = process.env.OPERATION === 'deploy';
             if (String(target?.number) !== process.env.PR ||
-                target.operation !== (publish ? 'publish' : 'delete') ||
-                (publish && target.sha !== context.payload.workflow_run.head_sha)) {
+                target.operation !== process.env.OPERATION ||
+                (target.operation === 'deploy' && target.sha !== context.payload.workflow_run.head_sha)) {
               throw new Error('The PR is no longer authorized for this preview operation');
             }
       - *deploy-cf
       - *parse-cf
       - name: Delete reviewed preview
         if: inputs.operation == 'delete-preview'
-        env:
-          PREVIEW_NAME: forkpreview-${{ inputs.reviewed-pr }}
-          WORKER_NAME: ${{ inputs.worker-name }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        env: *delete-env
         shell: bash
         run: *delete-preview
 
-  reviewed-comment:
-    name: Comment on reviewed preview
-    needs: reviewed
-    if: inputs.operation == 'deploy' && inputs.pr-comment && needs.reviewed.outputs.url != ''
-    runs-on: ubuntu-slim
-    timeout-minutes: 5
-    steps:
-      - uses: actions/github-script@v9.0.0
+      - name: Comment on reviewed preview
+        if: inputs.operation == 'deploy' && inputs.pr-comment
+        uses: actions/github-script@v9.0.0
         env:
           PR: ${{ inputs.reviewed-pr }}
-          URL: ${{ needs.reviewed.outputs.url }}
+          URL: ${{ steps.cf-parse.outputs.preview-build-url }}
         with:
           script: |
             const sha = context.payload.workflow_run.head_sha;
