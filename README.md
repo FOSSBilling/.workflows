@@ -36,7 +36,7 @@ The workflow validates its inputs, restores the caller's build artifact, deploys
 
 See the `inputs:` and `outputs:` blocks at the top of [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) for the full list, including `pr-comment`, `worker-name`, and `prebuilt`.
 
-Use `delete-preview` on `pull_request_target` with `types: [closed]` to clean up previews for same-repository PRs. Set `worker-name` and `environment`, pass both Cloudflare secrets as shown above, and give the calling job `contents: read` and the same concurrency group as the branch's preview deployment.
+Use `delete-preview` on `pull_request_target` with `types: [closed]` for same-repository PRs, or on `delete` for branches that are still absent when cleanup runs. Set `worker-name` and `environment`, pass both Cloudflare secrets as shown above, and give the calling job `contents: read` and the same concurrency group as the branch's preview deployment.
 
 ## Dependency pinning and updates
 
