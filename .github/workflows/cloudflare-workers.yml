@@ -30,8 +30,12 @@ on:
         description: GitHub environment for secrets and protection rules.
         type: string
       artifact-name:
-        description: Build artifact uploaded by the caller in this run.
+        description: Build artifact to deploy. Defaults to the current run as its source.
         type: string
+      artifact-run-id:
+        description: Approved CI run in this repository supplying a Cloudflare build output for a named static preview.
+        type: string
+        default: ''
       artifact-path:
         description: Directory in which to restore the build artifact; must be .cloudflare/output/ when prebuilt is true.
         default: dist/
@@ -103,7 +107,7 @@ on:
         description: Preview name (preview mode only).
         value: ${{ jobs.deploy.outputs.preview-name }}
 
-# Deployment uses Cloudflare credentials and the artifact service, not repository-token permissions.
+# Downloading an approved build from another run requires actions: read.
 # Commenting inherits the caller's actions: read and pull-requests: write permissions.
 jobs:
   validate:
@@ -122,6 +126,7 @@ jobs:
           CHECKS_RESULT: ${{ inputs.checks-result }}
           TARGET_ENVIRONMENT: ${{ inputs.environment }}
           ARTIFACT_NAME: ${{ inputs.artifact-name }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact-run-id }}
           ARTIFACT_PATH: ${{ inputs.artifact-path }}
           CONFIG_PATH: ${{ inputs.config-path }}
           CLI: ${{ inputs.cli }}
@@ -141,6 +146,10 @@ jobs:
             }
             if (process.env.WORKER_NAME && !/^[a-zA-Z0-9_-]+$/.test(process.env.WORKER_NAME)) {
               throw new Error('worker-name must contain only letters, numbers, underscores, or hyphens');
+            }
+            if (process.env.ARTIFACT_RUN_ID && (!/^[1-9]\d*$/.test(process.env.ARTIFACT_RUN_ID) ||
+                !process.env.PREVIEW_NAME || operation !== 'deploy')) {
+              throw new Error('artifact-run-id requires a positive run ID and a named static preview deployment');
             }
             if (process.env.PREVIEW_NAME) {
               const staticPreview = operation === 'deploy' && process.env.MODE === 'preview' &&
@@ -240,6 +249,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      actions: read
     environment:
       name: ${{ inputs.environment }}
       deployment: false
@@ -283,10 +293,33 @@ jobs:
           node-version: ${{ inputs.node-version }}
 
       - name: Download Worker Build
+        if: inputs.artifact-run-id == ''
         uses: actions/download-artifact@v8.0.2
         with:
           name: ${{ inputs.artifact-name }}
           path: ${{ inputs.preview-name && format('{0}/static-preview', runner.temp) || inputs.artifact-path }}
+
+      - name: Download Approved Worker Build
+        if: inputs.artifact-run-id != ''
+        uses: actions/download-artifact@v8.0.2
+        with:
+          name: ${{ inputs.artifact-name }}
+          run-id: ${{ inputs.artifact-run-id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/approved-build
+
+      - name: Prepare Approved Static Assets
+        if: inputs.artifact-run-id != ''
+        working-directory: ${{ runner.temp }}/approved-build
+        run: |
+          special=$(find . ! -type f ! -type d -print -quit)
+          test -z "$special"
+          assets=v1/workers/default/assets
+          test -f "$assets/index.html"
+          mv "$assets" "$RUNNER_TEMP/static-preview"
+          cd "$RUNNER_TEMP/static-preview"
+          rm -rf -- _worker.js _routes.json
+          printf '/*\n  X-Robots-Tag: noindex\n' > _headers
 
       - name: Deploy Worker
         id: wrangler
