@@ -32,7 +32,9 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 ```
 
-The workflow validates its inputs, restores the caller's build artifact, deploys, and reports the deployment URL as the `deployment-url` output (plus `preview-url`, `preview-build-url`, and `preview-name` in preview mode). It never executes PR code when commenting — it only reads build metadata and preview URLs via the GitHub API.
+Use `deployment-url` for production. For previews, `preview-url` follows the branch and `preview-build-url` points to a specific build.
+
+PR comment updates read build metadata and preview URLs via the GitHub API without executing PR code.
 
 See the `inputs:` and `outputs:` blocks at the top of [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) for the full list, including `pr-comment`, `worker-name`, and `prebuilt`.
 

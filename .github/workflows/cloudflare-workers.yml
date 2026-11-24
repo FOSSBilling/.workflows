@@ -87,7 +87,7 @@ on:
         required: false
     outputs:
       deployment-url:
-        description: URL reported by the deploy CLI (Wrangler or cf) for the deployment.
+        description: Production deployment URL. For previews, use preview-url or preview-build-url.
         value: ${{ jobs.deploy.outputs.deployment-url }}
       preview-url:
         description: Stable branch preview URL (preview mode only).
@@ -330,7 +330,6 @@ jobs:
         with:
           script: |
             const fs = require('node:fs');
-            const read = path => { try { return fs.readFileSync(path, 'utf8'); } catch { return ''; } };
             // cf reports command results as JSON objects carrying type and version on stdout
             // (for example `cf previews deploy`). Scan from the end so build noise cannot win.
             const lastResult = text => {
@@ -377,7 +376,14 @@ jobs:
               const value = list.find(item => typeof item === 'string' && item.trim());
               return url(value);
             };
-            const r = lastResult(read(process.env.CF_STDOUT)) ?? lastResult(read(process.env.CF_NDJSON));
+            let r = lastResult(fs.readFileSync(process.env.CF_STDOUT, 'utf8'));
+            if (!r) {
+              try {
+                r = lastResult(fs.readFileSync(process.env.CF_NDJSON, 'utf8'));
+              } catch (error) {
+                if (error.code !== 'ENOENT') throw error;
+              }
+            }
             if (!r) throw new Error('cf did not report a result');
             if (process.env.MODE === 'preview') {
               const previewUrl = pick(r.preview_urls) || url(r.preview_alias_url);
