@@ -36,7 +36,7 @@ The workflow validates its inputs, restores the caller's build artifact, deploys
 
 See the `inputs:` and `outputs:` blocks at the top of [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) for the full list, including `pr-comment`, `worker-name`, and `prebuilt`.
 
-For `delete-preview`, call the workflow from a `pull_request_target` workflow that listens for `closed`. Set `worker-name` to the Cloudflare Worker and `environment` to the caller's preview environment. Pass `CLOUDFLARE_API_TOKEN` by name and provide `CLOUDFLARE_ACCOUNT_ID` as an Actions variable or named secret. Give the calling job the same concurrency group as the branch's preview deployment. The workflow deletes the preview named for the head branch of a same-repository pull request, including when it closes without merging.
+For `delete-preview`, call the workflow from a `pull_request_target` workflow that listens for `closed`. Set `worker-name` to the Cloudflare Worker and `environment` to the caller's preview environment. Pass `CLOUDFLARE_API_TOKEN` by name and provide `CLOUDFLARE_ACCOUNT_ID` as an Actions variable or named secret. Give the calling job `contents: read` to match the reusable workflow's permissions and use the same concurrency group as the branch's preview deployment. The cleanup job itself runs with `permissions: {}` and deletes the head branch's preview when a same-repository pull request closes, including without merging.
 
 ## Dependency pinning and updates
 
