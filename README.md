@@ -40,9 +40,7 @@ See the `inputs:` and `outputs:` blocks at the top of [`cloudflare-workers.yml`]
 
 Use `delete-preview` on `pull_request` with `types: [closed]` for same-repository PRs, or on `delete` for branches that are still absent when cleanup runs. Set `worker-name` and `environment`, pass both Cloudflare secrets as shown above, and give the calling job `contents: read` and the same concurrency group as the branch's preview deployment.
 
-For a reviewed fork preview, call from a successful `pull_request_review` build's `workflow_run` to deploy, or a `pull_request` close run's `workflow_run` to delete, with `reviewed-pr` set to the PR number and `review-authorization` set to a CommonJS module under the upstream repository’s `.github/` directory. The caller owns the review policy. The module receives `{ github, context }` and returns `{ operation: 'deploy', number, sha }` or `{ operation: 'delete-preview', number }` when currently authorized. Serialize both operations per PR in the caller.
-
-Use `operation: deploy`, `mode: preview`, and `cli: cf` with a checked static asset artifact from the current run. For cleanup use `operation: delete-preview`. Supply the same `worker-name` and preview environment for both. The shared workflow uses the upstream lockfile, rechecks authorization, and manages `forkpreview-<number>`. Give the caller `contents: read` and `pull-requests: read` for authorization. Use `pull-requests: write` and `pr-comment: true` to post the immutable build URL for the reviewed commit.
+For a named static preview, a trusted `workflow_run` caller authorizes the operation and passes `preview-name` with `cli: cf`, `mode: preview`, and a checked static artifact from its own run. Use the returned `preview-build-url` for a commit-specific link. To clean up, pass the same name with `operation: delete-preview`, `worker-name`, and the preview environment.
 
 ## Dependency pinning and updates
 
