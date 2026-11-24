@@ -10,7 +10,7 @@ uses: FOSSBilling/.workflows/.github/workflows/<workflow>.yml@main
 
 | File | Type | Purpose |
 | --- | --- | --- |
-| [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) | Reusable (`workflow_call`) | Deploys Cloudflare Workers in preview or production mode, using either Wrangler (`wrangler-action`) or the Cloudflare CLI (`cf`, with optional `--prebuilt` deploys). Can also sync preview deployment links into pull request comments (`operation: sync-pr-comment`). |
+| [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) | Reusable (`workflow_call`) | Deploys Workers with Wrangler or `cf`, syncs preview comments, and cleans up previews. |
 | [`actionlint.yml`](.github/workflows/actionlint.yml) | CI for this repo | Lints all workflow files with [actionlint](https://github.com/rhysd/actionlint), run via a digest-pinned Docker image on every push and pull request. |
 | [`verify-lockfile.yml`](.github/workflows/verify-lockfile.yml) | CI for this repo | Verifies [`actions.lock`](.github/workflows/actions.lock) with `gh actions-lock --verify` whenever workflow files change. |
 
@@ -21,7 +21,7 @@ jobs:
   deploy:
     uses: FOSSBilling/.workflows/.github/workflows/cloudflare-workers.yml@main
     with:
-      operation: deploy            # deploy | sync-pr-comment
+      operation: deploy
       mode: production             # preview | production
       environment: production      # GitHub environment holding the secrets
       artifact-name: worker-build  # build artifact uploaded earlier in the run
@@ -35,6 +35,8 @@ jobs:
 The workflow validates its inputs, restores the caller's build artifact, deploys, and reports the deployment URL as the `deployment-url` output (plus `preview-url`, `preview-build-url`, and `preview-name` in preview mode). It never executes PR code when commenting — it only reads build metadata and preview URLs via the GitHub API.
 
 See the `inputs:` and `outputs:` blocks at the top of [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) for the full list, including `pr-comment`, `worker-name`, and `prebuilt`.
+
+Use `delete-preview` on `pull_request_target` with `types: [closed]` to clean up previews for same-repository PRs. Set `worker-name` and `environment`, pass both Cloudflare secrets as shown above, and give the calling job `contents: read` and the same concurrency group as the branch's preview deployment.
 
 ## Dependency pinning and updates
 
