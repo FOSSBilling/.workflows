@@ -36,6 +36,10 @@ on:
         description: Approved CI run in this repository supplying a Cloudflare build output for a named static preview.
         type: string
         default: ''
+      preview-pr-number:
+        description: Check the current fork PR head before publishing artifacts from the triggering CI run.
+        type: string
+        default: ''
       artifact-path:
         description: Directory in which to restore the build artifact; must be .cloudflare/output/ when prebuilt is true.
         default: dist/
@@ -127,6 +131,7 @@ jobs:
           TARGET_ENVIRONMENT: ${{ inputs.environment }}
           ARTIFACT_NAME: ${{ inputs.artifact-name }}
           ARTIFACT_RUN_ID: ${{ inputs.artifact-run-id }}
+          PREVIEW_PR_NUMBER: ${{ inputs.preview-pr-number }}
           ARTIFACT_PATH: ${{ inputs.artifact-path }}
           CONFIG_PATH: ${{ inputs.config-path }}
           CLI: ${{ inputs.cli }}
@@ -150,6 +155,13 @@ jobs:
             if (process.env.ARTIFACT_RUN_ID && (!/^[1-9]\d*$/.test(process.env.ARTIFACT_RUN_ID) ||
                 !process.env.PREVIEW_NAME || operation !== 'deploy')) {
               throw new Error('artifact-run-id requires a positive run ID and a named static preview deployment');
+            }
+            if (process.env.PREVIEW_PR_NUMBER) {
+              const run = context.payload.workflow_run;
+              if (!/^[1-9]\d*$/.test(process.env.PREVIEW_PR_NUMBER) || !process.env.ARTIFACT_RUN_ID ||
+                  run?.event !== 'pull_request' || run.conclusion !== 'success' || String(run.id) !== process.env.ARTIFACT_RUN_ID) {
+                throw new Error('preview-pr-number requires a fork PR number and the triggering successful CI run');
+              }
             }
             if (process.env.PREVIEW_NAME) {
               const staticPreview = operation === 'deploy' && process.env.MODE === 'preview' &&
@@ -347,8 +359,30 @@ jobs:
             npm install --no-audit --no-fund
           fi
 
+      - name: Check Fork Preview Head
+        id: fork-head
+        if: inputs.preview-pr-number != ''
+        uses: actions/github-script@v9.0.0
+        env:
+          PREVIEW_PR_NUMBER: ${{ inputs.preview-pr-number }}
+          PR_BASE_BRANCH: ${{ inputs.pr-base-branch }}
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const number = Number(process.env.PREVIEW_PR_NUMBER);
+            const base = process.env.PR_BASE_BRANCH || context.payload.repository.default_branch;
+            const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: number });
+            if (pr.state !== 'open' || pr.base.ref !== base || !pr.head.repo ||
+                pr.head.repo.id === pr.base.repo.id || pr.head.repo.id !== run.head_repository?.id ||
+                pr.head.ref !== run.head_branch || pr.head.sha !== run.head_sha) {
+              core.notice(`Skipping preview because PR #${number} no longer matches CI run ${run.id}.`);
+              return false;
+            }
+            return true;
+
       - name: Deploy with cf
-        if: ${{ inputs.cli == 'cf' }}
+        id: cf
+        if: inputs.cli == 'cf' && (inputs.preview-pr-number == '' || steps.fork-head.outputs.result == 'true')
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -370,7 +404,7 @@ jobs:
 
       - name: Parse cf Result
         id: cf-parse
-        if: inputs.cli == 'cf'
+        if: steps.cf.outcome == 'success'
         uses: actions/github-script@v9.0.0
         env:
           MODE: ${{ inputs.mode }}
@@ -448,7 +482,7 @@ jobs:
             }
 
       - name: Add Deployment Summary
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.fork-head.outputs.result != 'false' }}
         uses: actions/github-script@v9.0.0
         env:
           MODE: ${{ inputs.mode }}
