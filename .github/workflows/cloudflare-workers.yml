@@ -8,9 +8,13 @@ on:
         default: deploy
         type: string
       preview-name:
-        description: Explicit name for a checked static cf preview or its cleanup from a trusted workflow_run.
+        description: Explicit name for a checked static cf preview or its cleanup from a trusted workflow_run or pull_request_target close event.
         type: string
         default: ''
+      reserve-fork-preview-names:
+        description: Leave pr-<number> previews untouched during branch cleanup.
+        type: boolean
+        default: false
       build-workflow:
         description: Deployment workflow filename or ID; required for sync-pr-comment.
         default: ''
@@ -167,9 +171,13 @@ jobs:
             if (process.env.PREVIEW_NAME) {
               const staticPreview = operation === 'deploy' && process.env.MODE === 'preview' &&
                 cli === 'cf' && process.env.PREBUILT === 'false';
-              if (context.eventName !== 'workflow_run' || !/^[a-z0-9][a-z0-9-]*$/.test(process.env.PREVIEW_NAME) ||
-                  (!staticPreview && operation !== 'delete-preview')) {
-                throw new Error('preview-name requires a workflow_run static cf preview or preview cleanup and a lowercase slug');
+              const pr = context.payload.pull_request;
+              const forkClose = context.eventName === 'pull_request_target' && context.payload.action === 'closed' &&
+                pr?.base.repo.id === context.payload.repository.id && pr.head.repo?.id !== pr.base.repo.id &&
+                operation === 'delete-preview' && process.env.PREVIEW_NAME === `pr-${pr.number}`;
+              const workflowRun = context.eventName === 'workflow_run' && (staticPreview || operation === 'delete-preview');
+              if ((!workflowRun && !forkClose) || !/^[a-z0-9][a-z0-9-]*$/.test(process.env.PREVIEW_NAME)) {
+                throw new Error('preview-name requires an authorized static preview or cleanup and a lowercase slug');
               }
             }
             if (operation === 'deploy') {
@@ -213,7 +221,8 @@ jobs:
     if: >-
       inputs.operation == 'delete-preview' &&
       (inputs.preview-name != '' ||
-       (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository) ||
+       ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') &&
+        github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository) ||
        (github.event_name == 'delete' && github.event.ref_type == 'branch' && github.event.ref != '' && github.event.ref != github.event.repository.default_branch))
     runs-on: ubuntu-slim
     timeout-minutes: 10
@@ -223,13 +232,23 @@ jobs:
       name: ${{ inputs.environment }}
       deployment: false
     steps:
-      - name: Check Deleted Branch
-        id: branch
-        if: github.event_name == 'delete'
+      - name: Check Branch Preview Cleanup
+        id: branch-cleanup
+        if: inputs.preview-name == ''
         uses: actions/github-script@v9.0.0
+        env:
+          RESERVE_FORK_PREVIEW_NAMES: ${{ inputs.reserve-fork-preview-names }}
         with:
           script: |
-            const ref = `heads/${context.payload.ref}`;
+            const branch = context.payload.pull_request?.head.ref ?? context.payload.ref;
+            if (process.env.RESERVE_FORK_PREVIEW_NAMES === 'true') {
+              const slug = branch.normalize('NFKD').replace(/\p{Mark}/gu, '').toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+              if (/^pr-\d+$/.test(slug)) return false;
+            }
+            if (context.eventName !== 'delete') return true;
+
+            const ref = `heads/${branch}`;
             try {
               await github.rest.git.getRef({ ...context.repo, ref });
             } catch (error) {
@@ -239,7 +258,7 @@ jobs:
             core.notice(`Skipping preview cleanup because ${ref} exists again`);
             return false;
       - name: Delete Preview
-        if: inputs.preview-name != '' || github.event_name == 'pull_request' || steps.branch.outputs.result == 'true'
+        if: inputs.preview-name != '' || steps.branch-cleanup.outputs.result == 'true'
         env:
           # renovate: datasource=npm depName=cf
           CF_VERSION: '1.0.0-rc.3'
@@ -334,17 +353,6 @@ jobs:
           rm -rf -- _worker.js _routes.json
           printf '/*\n  X-Robots-Tag: noindex\n' > _headers
 
-      - name: Deploy Worker
-        id: wrangler
-        if: ${{ inputs.cli == 'wrangler' }}
-        uses: cloudflare/wrangler-action@v4.1.3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: ${{ inputs.wrangler-version }}
-          environment: ${{ inputs.wrangler-environment }}
-          command: ${{ steps.command.outputs.command }}
-
       - name: Prepare cf Project
         if: inputs.cli == 'cf'
         run: |
@@ -359,6 +367,33 @@ jobs:
           else
             npm install --no-audit --no-fund
           fi
+
+      - name: Verify Branch Head
+        if: github.event_name == 'push' && (github.ref_type == 'branch' || github.event.deleted)
+        uses: actions/github-script@v9.0.0
+        with:
+          script: |
+            if (context.payload.deleted) throw new Error('Cannot deploy a deleted branch');
+            try {
+              const { data } = await github.rest.git.getRef({ ...context.repo, ref: context.ref.slice('refs/'.length) });
+              if (data.object.sha !== context.sha) {
+                throw new Error('Branch head has advanced. Deploy from the current commit.');
+              }
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              throw new Error('Cannot deploy a branch that no longer exists');
+            }
+
+      - name: Deploy Worker
+        id: wrangler
+        if: ${{ inputs.cli == 'wrangler' }}
+        uses: cloudflare/wrangler-action@v4.1.3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: ${{ inputs.wrangler-version }}
+          environment: ${{ inputs.wrangler-environment }}
+          command: ${{ steps.command.outputs.command }}
 
       - name: Deploy with cf
         if: ${{ inputs.cli == 'cf' }}
