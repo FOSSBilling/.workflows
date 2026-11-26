@@ -48,27 +48,13 @@ on:
         description: "Deploy .cloudflare/output/ with cf --prebuilt. The artifact must match the deployment mode (preview or production)."
         default: false
         type: boolean
-      cli:
-        description: "CLI used to deploy the Worker: wrangler (via wrangler-action, driven by config-path) or cf (Cloudflare CLI, driven by cloudflare.config.ts in the repository root; the cf version is the one pinned in the caller's package.json)."
-        default: wrangler
-        type: string
       cf-mode:
         description: "Build mode for cf --prebuilt. Must match buildContext.mode in .cloudflare/output/v1/config.json."
         default: production
         type: string
-      config-path:
-        description: Wrangler configuration path relative to the workspace; required when cli is wrangler, ignored when cli is cf.
-        type: string
-      wrangler-environment:
-        description: Optional named environment in the Wrangler configuration; only used when cli is wrangler.
-        default: ''
-        type: string
       node-version:
-        description: Node.js version used to run the deploy CLI (Wrangler or cf).
+        description: Node.js version used to run cf.
         default: 'lts/*'
-        type: string
-      wrangler-version:
-        description: Optional Wrangler version; omit to use the wrangler-action default value; only used when cli is wrangler.
         type: string
       pr-comment:
         description: "Maintain comments on matching PRs for preview build and deployment attempts (requires actions: read and pull-requests: write in the caller)."
@@ -137,8 +123,6 @@ jobs:
           FORK_PR_NUMBER: ${{ inputs.fork-pr-number }}
           ARTIFACT_RUN_ID: ${{ inputs.artifact-run-id }}
           ARTIFACT_PATH: ${{ inputs.artifact-path }}
-          CONFIG_PATH: ${{ inputs.config-path }}
-          CLI: ${{ inputs.cli }}
           PREBUILT: ${{ inputs.prebuilt }}
           CF_MODE: ${{ inputs.cf-mode }}
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
@@ -148,10 +132,6 @@ jobs:
             const operation = process.env.OPERATION;
             if (!['deploy', 'sync-pr-comment', 'delete-preview'].includes(operation)) {
               throw new Error('operation must be deploy, sync-pr-comment, or delete-preview');
-            }
-            const cli = process.env.CLI;
-            if (!['wrangler', 'cf'].includes(cli)) {
-              throw new Error('cli must be wrangler or cf');
             }
             if (process.env.WORKER_NAME && !/^[a-zA-Z0-9_-]+$/.test(process.env.WORKER_NAME)) {
               throw new Error('worker-name must contain only letters, numbers, underscores, or hyphens');
@@ -170,7 +150,7 @@ jobs:
             }
             if (process.env.PREVIEW_NAME) {
               const staticPreview = operation === 'deploy' && process.env.MODE === 'preview' &&
-                cli === 'cf' && process.env.PREBUILT === 'false';
+                process.env.PREBUILT === 'false';
               if (context.eventName !== 'workflow_run' || !/^[a-z0-9][a-z0-9-]*$/.test(process.env.PREVIEW_NAME) ||
                   (!staticPreview && operation !== 'delete-preview')) {
                 throw new Error('preview-name requires a workflow_run static cf preview or preview cleanup and a lowercase slug');
@@ -178,7 +158,6 @@ jobs:
             }
             if (operation === 'deploy') {
               if (process.env.PREBUILT === 'true') {
-                if (cli !== 'cf') throw new Error('prebuilt is only supported with cli: cf');
                 if (!/^[a-zA-Z0-9_-]+$/.test(process.env.CF_MODE)) {
                   throw new Error('cf-mode must contain only letters, numbers, underscores, or hyphens');
                 }
@@ -194,11 +173,7 @@ jobs:
               if (!['preview', 'production'].includes(process.env.MODE)) {
                 throw new Error('mode must be preview or production for deploy');
               }
-              // cf reads cloudflare.config.ts from the repository root, so config-path is wrangler-only.
-              const required = cli === 'cf'
-                ? ['TARGET_ENVIRONMENT', 'ARTIFACT_NAME']
-                : ['TARGET_ENVIRONMENT', 'ARTIFACT_NAME', 'CONFIG_PATH'];
-              for (const name of required) {
+              for (const name of ['TARGET_ENVIRONMENT', 'ARTIFACT_NAME']) {
                 if (!process.env[name]?.trim()) throw new Error(`${name} is required for deploy`);
               }
             } else if (operation === 'sync-pr-comment') {
@@ -281,31 +256,20 @@ jobs:
       name: ${{ inputs.environment }}
       deployment: false
     outputs:
-      deployment-url: ${{ steps.cf-parse.outputs.deployment-url || steps.wrangler.outputs.deployment-url }}
-      preview-url: ${{ steps.cf-parse.outputs.preview-url || steps.wrangler.outputs.preview-url }}
-      preview-build-url: ${{ steps.cf-parse.outputs.preview-build-url || steps.wrangler.outputs.preview-deployment-url }}
-      preview-name: ${{ steps.cf-parse.outputs.preview-name || steps.wrangler.outputs.preview-name }}
+      deployment-url: ${{ steps.cf-parse.outputs.deployment-url }}
+      preview-url: ${{ steps.cf-parse.outputs.preview-url }}
+      preview-build-url: ${{ steps.cf-parse.outputs.preview-build-url }}
+      preview-name: ${{ steps.cf-parse.outputs.preview-name }}
     steps:
-      - name: Validate Deployment Inputs
-        id: command
+      - name: Check Cloudflare Credentials
         uses: actions/github-script@v9.0.0
         env:
-          MODE: ${{ inputs.mode }}
-          CLI: ${{ inputs.cli }}
-          CONFIG_PATH: ${{ inputs.config-path }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         with:
           script: |
             for (const name of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID']) {
               if (!process.env[name]?.trim()) throw new Error(`${name} is required for deploy`);
-            }
-            if (process.env.CLI === 'wrangler') {
-              const config = process.env.CONFIG_PATH;
-              if (!config || /["`$\\\r\n]/.test(config)) {
-                throw new Error('config-path must be a path without shell metacharacters');
-              }
-              core.setOutput('command', `${process.env.MODE === 'preview' ? 'preview' : 'deploy'} --config "${config}"`);
             }
 
       - name: Checkout Repository
@@ -349,11 +313,10 @@ jobs:
           printf '/*\n  X-Robots-Tag: noindex\n' > _headers
 
       - name: Prepare cf Project
-        if: inputs.cli == 'cf'
         run: |
           # cf generates a configuration if one is missing.
           if [ ! -f cloudflare.config.ts ]; then
-            echo 'cloudflare.config.ts is required at the repository root when cli is cf; run cf migrate first' >&2
+            echo 'cloudflare.config.ts is required at the repository root; run cf migrate first' >&2
             exit 1
           fi
 
@@ -379,19 +342,7 @@ jobs:
               throw new Error('Cannot deploy a branch that no longer exists');
             }
 
-      - name: Deploy Worker
-        id: wrangler
-        if: ${{ inputs.cli == 'wrangler' }}
-        uses: cloudflare/wrangler-action@v4.1.3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: ${{ inputs.wrangler-version }}
-          environment: ${{ inputs.wrangler-environment }}
-          command: ${{ steps.command.outputs.command }}
-
       - name: Deploy with cf
-        if: ${{ inputs.cli == 'cf' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -401,7 +352,7 @@ jobs:
           CF_MODE: ${{ inputs.cf-mode }}
           PREVIEW_NAME: ${{ inputs.preview-name }}
           CF_STDOUT: ${{ runner.temp }}/cf-stdout.log
-          # Some cf versions report production targets only in Wrangler's output file.
+          # Some cf versions use this variable to write deployment results.
           WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/cf-output.ndjson
         shell: bash
         run: |
@@ -413,7 +364,6 @@ jobs:
 
       - name: Parse cf Result
         id: cf-parse
-        if: inputs.cli == 'cf'
         uses: actions/github-script@v9.0.0
         env:
           MODE: ${{ inputs.mode }}
@@ -451,7 +401,7 @@ jobs:
               if (!Array.isArray(list)) return '';
               return normalizeUrl(list.find(item => typeof item === 'string' && item.trim()));
             };
-            // cf reports JSON on stdout or in Wrangler's NDJSON file, depending on the command and version.
+            // cf reports JSON on stdout or in the NDJSON file, depending on the command and version.
             let result = parseResult(fs.readFileSync(process.env.CF_STDOUT, 'utf8'));
             if (!result) {
               try {
@@ -480,10 +430,10 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
           DEPLOYMENT_STATUS: ${{ job.status }}
-          DEPLOYMENT_URL: ${{ steps.cf-parse.outputs.deployment-url || steps.wrangler.outputs.deployment-url }}
-          PREVIEW_NAME: ${{ steps.cf-parse.outputs.preview-name || steps.wrangler.outputs.preview-name }}
-          PREVIEW_URL: ${{ steps.cf-parse.outputs.preview-url || steps.wrangler.outputs.preview-url }}
-          PREVIEW_BUILD_URL: ${{ steps.cf-parse.outputs.preview-build-url || steps.wrangler.outputs.preview-deployment-url }}
+          DEPLOYMENT_URL: ${{ steps.cf-parse.outputs.deployment-url }}
+          PREVIEW_NAME: ${{ steps.cf-parse.outputs.preview-name }}
+          PREVIEW_URL: ${{ steps.cf-parse.outputs.preview-url }}
+          PREVIEW_BUILD_URL: ${{ steps.cf-parse.outputs.preview-build-url }}
         with:
           script: |
             const preview = process.env.MODE === 'preview';

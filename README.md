@@ -3,14 +3,14 @@
 This repository hosts the reusable GitHub Actions workflows shared across the [FOSSBilling](https://fossbilling.org/) organization. Instead of duplicating CI/CD logic in every project, call the workflows here from other repositories:
 
 ```yaml
-uses: FOSSBilling/.workflows/.github/workflows/<workflow>.yml@main
+uses: FOSSBilling/.workflows/.github/workflows/<workflow>.yml@<commit-sha>
 ```
 
 ## Workflows
 
 | File | Type | Purpose |
 | --- | --- | --- |
-| [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) | Reusable (`workflow_call`) | Deploys Workers with Wrangler or `cf`, syncs preview comments, and cleans up previews. |
+| [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) | Reusable (`workflow_call`) | Deploys Workers with `cf`, syncs preview comments, and cleans up previews. |
 | [`cloudflare-fork-preview-cleanup.yml`](.github/workflows/cloudflare-fork-preview-cleanup.yml) | Reusable (`workflow_call`) | Removes reserved `pr-<number>` previews for closed fork PRs on a schedule. |
 | [`cloudflare-fork-worker-preview.yml`](.github/workflows/cloudflare-fork-worker-preview.yml) | Reusable (`workflow_call`) | Deploys approved fork code as a named Cloudflare Worker Preview. |
 | [`actionlint.yml`](.github/workflows/actionlint.yml) | CI for this repo | Lints all workflow files with [actionlint](https://github.com/rhysd/actionlint), run via a digest-pinned Docker image on every push and pull request. |
@@ -18,17 +18,19 @@ uses: FOSSBilling/.workflows/.github/workflows/<workflow>.yml@main
 
 ## Using the Cloudflare Workers workflow
 
+Commit `cloudflare.config.ts` at the repository root and pin `cf` in the caller’s dependencies. Wrangler callers can keep their existing workflow SHA.
+
 ```yaml
 jobs:
   deploy:
-    uses: FOSSBilling/.workflows/.github/workflows/cloudflare-workers.yml@main
+    uses: FOSSBilling/.workflows/.github/workflows/cloudflare-workers.yml@<commit-sha>
     with:
       operation: deploy
       mode: production             # preview | production
       environment: production      # GitHub environment holding the secrets
       artifact-name: worker-build  # build artifact uploaded earlier in the run
-      cli: wrangler                # wrangler | cf
-      config-path: wrangler.jsonc  # required when cli is wrangler
+      artifact-path: .cloudflare/output/
+      prebuilt: true
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -44,7 +46,7 @@ See the `inputs:` and `outputs:` blocks at the top of [`cloudflare-workers.yml`]
 
 Use `delete-preview` on `pull_request` with `types: [closed]` for same-repository PRs, or on `delete` for branches that are still absent when cleanup runs. Cleanup uses event metadata and GitHub API calls without checking out PR code. Set `worker-name` and `environment`, pass both Cloudflare secrets as shown above, and give the calling job `contents: read`, `actions: read`, and the same concurrency group as the branch's preview deployment.
 
-For a named static preview, a trusted `workflow_run` caller authorizes the operation and sets `cli: cf`, `mode: preview`, and `prebuilt: false` (the default). Set `preview-name` to a lowercase slug starting with a letter or digit and containing only letters, digits, and hyphens. Set `artifact-name` to the checked static artifact from the caller’s current run, or supply `artifact-run-id` and the name of the Cloudflare build artifact from the approved run. For an approved run the workflow publishes only `v1/workers/default/assets/`. Grant the calling job `actions: read` and `contents: read`. To maintain the shared preview comment on a fork PR, pass `pr-comment: true` and `fork-pr-number` with the triggering successful PR run as `artifact-run-id`. Grant the caller `pull-requests: write`. Use the returned `preview-build-url` for a commit-specific link.
+For a named static preview, a trusted `workflow_run` caller authorizes the operation and sets `mode: preview` and `prebuilt: false` (the default). Set `preview-name` to a lowercase slug starting with a letter or digit and containing only letters, digits, and hyphens. Set `artifact-name` to the checked static artifact from the caller’s current run, or supply `artifact-run-id` and the name of the Cloudflare build artifact from the approved run. For an approved run the workflow publishes only `v1/workers/default/assets/`. Grant the calling job `actions: read` and `contents: read`. To maintain the shared preview comment on a fork PR, pass `pr-comment: true` and `fork-pr-number` with the triggering successful PR run as `artifact-run-id`. Grant the caller `pull-requests: write`. Use the returned `preview-build-url` for a commit-specific link.
 
 For static fork previews, call `cloudflare-fork-preview-cleanup.yml` on a schedule. It checks existing `pr-<number>` previews and deletes those for closed fork PRs targeting the default branch. Pass the Worker name and both Cloudflare secrets, grant `pull-requests: read`, and share the fork publishing concurrency group. Reserve `pr-<number>` names in the branch build and set `reserve-fork-preview-names: true` on branch cleanup.
 
@@ -58,7 +60,7 @@ Configure [required reviewers](https://docs.github.com/en/actions/how-tos/deploy
 
 Use test resources and credentials in the trusted config and Cloudflare’s Previews Base. New previews inherit their runtime secrets from Previews Base. Update existing preview secrets separately when rotating credentials.
 
-Commit `.github/fork-preview.json` on the default branch with the existing Worker’s `name`. With `cli: cf`, use `main` for the artifact entry point and `env` for staging bindings. The workflow generates Preview Build Output from this file and deploys it with `cf previews deploy --prebuilt`. An `auth` configuration can start with the following fields and add its staging bindings.
+Commit `.github/fork-preview.json` on the default branch with the existing Worker’s `name`, the artifact entry point in `main`, and staging bindings in `env`. The workflow generates Preview Build Output from this file and deploys it with `cf previews deploy --prebuilt`. An `auth` configuration can start with the following fields and add its staging bindings.
 
 ```json
 {
@@ -72,8 +74,6 @@ Commit `.github/fork-preview.json` on the default branch with the existing Worke
   }
 }
 ```
-
-For `cli: wrangler`, use Wrangler JSON fields in the same file. Set `main`, `compatibility_date`, optional `assets`, and `previews` with the staging bindings. The workflow uses Wrangler's `no_bundle` option.
 
 Build the exact PR head in `pull_request` CI and upload `fork-worker-${{ github.run_attempt }}`. In the ZIP, put compiled `.js` and `.mjs` modules under `worker/` and static files under `assets/`, preserving relative paths. `auth` can use the Vite Build Output bundle and assets. `extensions` can use Astro’s server modules and client assets. The archive limit is 20,000 entries and 256 MiB uncompressed.
 
@@ -94,7 +94,6 @@ jobs:
     uses: FOSSBilling/.workflows/.github/workflows/cloudflare-fork-worker-preview.yml@<commit-sha>
     with:
       build-workflow: ci-cd.yml
-      cli: cf
     secrets:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

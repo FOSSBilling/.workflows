@@ -7,10 +7,6 @@ on:
         description: Filename of the workflow that publishes the fork Worker artifact.
         required: true
         type: string
-      cli:
-        description: Preview deployment CLI (cf or wrangler).
-        type: string
-        default: cf
     secrets:
       CLOUDFLARE_ACCOUNT_ID:
         required: true
@@ -36,12 +32,8 @@ jobs:
         uses: actions/github-script@v9.0.0
         env:
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
-          PREVIEW_CLI: ${{ inputs.cli }}
         with:
           script: |
-            if (!['cf', 'wrangler'].includes(process.env.PREVIEW_CLI)) {
-              throw new Error('cli must be cf or wrangler');
-            }
             const { repository, workflow_run: run } = context.payload;
             const fork = run.head_repository;
             if (run.path !== `.github/workflows/${process.env.BUILD_WORKFLOW}` ||
@@ -105,8 +97,6 @@ jobs:
           skip-decompress: true
 
       - name: Prepare Worker Package
-        env:
-          PREVIEW_CLI: ${{ inputs.cli }}
         shell: bash
         run: |
           python3 - <<'PY'
@@ -158,36 +148,26 @@ jobs:
           if 'assets' in config and not (package / 'assets').is_dir():
               raise SystemExit('The Worker artifact is missing the configured assets')
 
-          if os.environ['PREVIEW_CLI'] == 'wrangler':
-              allowed = {'name', 'main', 'compatibility_date', 'compatibility_flags', 'assets', 'previews'}
-              if set(config) - allowed or not isinstance(config.get('previews'), dict):
-                  raise SystemExit('Use a standalone Wrangler configuration with preview-only bindings')
-              if 'assets' in config:
-                  config['assets']['directory'] = 'assets'
-              config.update(no_bundle=True, find_additional_modules=True, base_dir='worker',
-                            rules=[{'type': 'ESModule', 'globs': ['**/*.js', '**/*.mjs'], 'fallthrough': True}])
-              (package / 'wrangler.json').write_text(json.dumps(config))
-          else:
-              allowed = {'name', 'main', 'compatibilityDate', 'compatibilityFlags', 'assets', 'env'}
-              if set(config) - allowed:
-                  raise SystemExit('Use a standalone cf configuration with preview-only bindings')
-              bundle = package / 'worker'
-              config['manifest'] = {
-                  'type': 'complete',
-                  'mainModule': config.pop('main').removeprefix('worker/'),
-                  'modules': {entry.relative_to(bundle).as_posix(): {'type': 'esm'}
-                              for entry in bundle.rglob('*') if entry.is_file()},
-              }
-              output = package / '.cloudflare/output/v1'
-              worker = output / 'workers/default'
-              worker.mkdir(parents=True)
-              root_config = {'producer': {'name': 'fossbilling-fork-preview', 'version': '1'},
-                             'buildContext': {'isPreview': True}}
-              (output / 'config.json').write_text(json.dumps(root_config))
-              (worker / 'worker.config.json').write_text(json.dumps(config))
-              bundle.rename(worker / 'bundle')
-              if 'assets' in config:
-                  (package / 'assets').rename(worker / 'assets')
+          allowed = {'name', 'main', 'compatibilityDate', 'compatibilityFlags', 'assets', 'env'}
+          if set(config) - allowed:
+              raise SystemExit('Use a standalone cf configuration with preview-only bindings')
+          bundle = package / 'worker'
+          config['manifest'] = {
+              'type': 'complete',
+              'mainModule': config.pop('main').removeprefix('worker/'),
+              'modules': {entry.relative_to(bundle).as_posix(): {'type': 'esm'}
+                          for entry in bundle.rglob('*') if entry.is_file()},
+          }
+          output = package / '.cloudflare/output/v1'
+          worker = output / 'workers/default'
+          worker.mkdir(parents=True)
+          root_config = {'producer': {'name': 'fossbilling-fork-preview', 'version': '1'},
+                         'buildContext': {'isPreview': True}}
+          (output / 'config.json').write_text(json.dumps(root_config))
+          (worker / 'worker.config.json').write_text(json.dumps(config))
+          bundle.rename(worker / 'bundle')
+          if 'assets' in config:
+              (package / 'assets').rename(worker / 'assets')
           PY
 
       - name: Setup Node.js
@@ -223,13 +203,9 @@ jobs:
         id: deploy
         working-directory: ${{ runner.temp }}/fork-worker-package
         env:
-          PREVIEW_CLI: ${{ inputs.cli }}
           # renovate: datasource=npm depName=cf
           CF_VERSION: '1.0.0-rc.4'
           CF_SEND_TELEMETRY: 'false'
-          # renovate: datasource=npm depName=wrangler
-          WRANGLER_VERSION: '4.166.0'
-          WRANGLER_SEND_METRICS: 'false'
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           APPROVED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -241,16 +217,9 @@ jobs:
             exit 1
           fi
 
-          if [[ "$PREVIEW_CLI" == cf ]]; then
-            cli_package="cf@$CF_VERSION"
-            args=(previews deploy --prebuilt --preview-name "$PREVIEW_NAME")
-          else
-            cli_package="wrangler@$WRANGLER_VERSION"
-            args=(preview --config wrangler.json --name "$PREVIEW_NAME" --json)
-          fi
           result_path="$RUNNER_TEMP/fork-worker-result.ndjson"
           GITHUB_SHA="$APPROVED_HEAD_SHA" WRANGLER_OUTPUT_FILE_PATH="$result_path" \
-            npx --yes --ignore-scripts "$cli_package" "${args[@]}" > /dev/null
+            npx --yes --ignore-scripts "cf@$CF_VERSION" previews deploy --prebuilt --preview-name "$PREVIEW_NAME" > /dev/null
           url=$(jq -ser --arg name "$PREVIEW_NAME" '
             map(select(.type == "preview" and .preview_name == $name)) | last | .preview_urls[0]
             | select(type == "string" and test("^https://[A-Za-z0-9.-]+/?$"))' "$result_path")
