@@ -16,8 +16,6 @@ on:
         required: true
       CLOUDFLARE_API_TOKEN:
         required: true
-      FORK_PREVIEW_WORKER_SECRETS_JSON:
-        required: false
 
 jobs:
   prepare:
@@ -236,7 +234,6 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           APPROVED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           PREVIEW_NAME: pr-${{ needs.prepare.outputs.pr-number }}
-          PREVIEW_SECRET_VALUES: ${{ secrets.FORK_PREVIEW_WORKER_SECRETS_JSON }}
         shell: bash
         run: |
           if [[ -z "$CLOUDFLARE_ACCOUNT_ID" || -z "$CLOUDFLARE_API_TOKEN" ]]; then
@@ -244,26 +241,16 @@ jobs:
             exit 1
           fi
 
-          secret_args=()
-          if [[ -n "$PREVIEW_SECRET_VALUES" ]]; then
-            secrets_path=$(mktemp "$RUNNER_TEMP/worker-secrets.XXXXXX.json")
-            trap 'rm -f -- "$secrets_path"' EXIT
-            jq -e 'if type == "object" and all(.[]; type == "string") then . else error("Expected a string-valued object") end' \
-              <<< "$PREVIEW_SECRET_VALUES" > "$secrets_path"
-            secret_args=(--secrets-file "$secrets_path")
-          fi
-          unset PREVIEW_SECRET_VALUES
-
           if [[ "$PREVIEW_CLI" == cf ]]; then
             cli_package="cf@$CF_VERSION"
             args=(previews deploy --prebuilt --preview-name "$PREVIEW_NAME")
           else
             cli_package="wrangler@$WRANGLER_VERSION"
-            args=(preview --config wrangler.json --name "$PREVIEW_NAME" --ignore-base-config --json)
+            args=(preview --config wrangler.json --name "$PREVIEW_NAME" --json)
           fi
           result_path="$RUNNER_TEMP/fork-worker-result.ndjson"
           GITHUB_SHA="$APPROVED_HEAD_SHA" WRANGLER_OUTPUT_FILE_PATH="$result_path" \
-            npx --yes --ignore-scripts "$cli_package" "${args[@]}" "${secret_args[@]}" > /dev/null
+            npx --yes --ignore-scripts "$cli_package" "${args[@]}" > /dev/null
           url=$(jq -ser --arg name "$PREVIEW_NAME" '
             map(select(.type == "preview" and .preview_name == $name)) | last | .preview_urls[0]
             | select(type == "string" and test("^https://[A-Za-z0-9.-]+/?$"))' "$result_path")

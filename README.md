@@ -56,7 +56,7 @@ Use the existing Cloudflare account and Worker. The job publishes a named `pr-<n
 
 Configure [required reviewers](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments) on the `fork-preview` environment and store `CLOUDFLARE_API_TOKEN` there. Reuse the `CLOUDFLARE_ACCOUNT_ID` GitHub Actions variable.
 
-Use test resources and credentials in the trusted config and Cloudflare’s Previews Base. The deployed code can read its runtime bindings and secrets. Set per-preview secrets as a JSON object in the optional `FORK_PREVIEW_WORKER_SECRETS_JSON` environment secret. Existing previews can retain previously deployed secrets.
+Use test resources and credentials in the trusted config and Cloudflare’s Previews Base. New previews inherit their runtime secrets from Previews Base. Update existing preview secrets separately when rotating credentials.
 
 Commit `.github/fork-preview.json` on the default branch with the existing Worker’s `name`. With `cli: cf`, use `main` for the artifact entry point and `env` for staging bindings. The workflow generates Preview Build Output from this file and deploys it with `cf previews deploy --prebuilt`. An `auth` configuration can start with the following fields and add its staging bindings.
 
@@ -73,7 +73,7 @@ Commit `.github/fork-preview.json` on the default branch with the existing Worke
 }
 ```
 
-For `cli: wrangler`, use Wrangler JSON fields in the same file. Set `main`, `compatibility_date`, optional `assets`, and `previews` with the staging bindings. The workflow uses Wrangler's `no_bundle` and `--ignore-base-config` options.
+For `cli: wrangler`, use Wrangler JSON fields in the same file. Set `main`, `compatibility_date`, optional `assets`, and `previews` with the staging bindings. The workflow uses Wrangler's `no_bundle` option.
 
 Build the exact PR head in `pull_request` CI and upload `fork-worker-${{ github.run_attempt }}`. In the ZIP, put compiled `.js` and `.mjs` modules under `worker/` and static files under `assets/`, preserving relative paths. `auth` can use the Vite Build Output bundle and assets. `extensions` can use Astro’s server modules and client assets. The archive limit is 20,000 entries and 256 MiB uncompressed.
 
@@ -98,7 +98,6 @@ jobs:
     secrets:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      FORK_PREVIEW_WORKER_SECRETS_JSON: ${{ secrets.FORK_PREVIEW_WORKER_SECRETS_JSON }}
 ```
 
 For scheduled cleanup, call `cloudflare-fork-preview-cleanup.yml` with the same `worker-name` and account. Use an environment with Cloudflare credentials and no required reviewers so cleanup runs on its schedule.
