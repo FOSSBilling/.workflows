@@ -7,6 +7,10 @@ on:
         description: Filename of the workflow that publishes the fork Worker artifact.
         required: true
         type: string
+      worker-entrypoint:
+        description: Compiled entry module within the artifact's worker directory.
+        default: index.js
+        type: string
     secrets:
       CLOUDFLARE_ACCOUNT_ID:
         required: true
@@ -79,13 +83,39 @@ jobs:
       name: fork-preview
       url: ${{ steps.deploy.outputs.url }}
     steps:
-      - name: Checkout Trusted Preview Configuration
+      - name: Checkout Default Branch
         uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-          sparse-checkout: .github/fork-preview.json
-          sparse-checkout-cone-mode: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '26'
+          package-manager-cache: false
+
+      - name: Read Trusted Worker Configuration
+        shell: bash
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          node --input-type=module <<'JS'
+          import { writeFileSync } from 'node:fs';
+          import config from './cloudflare.config.ts';
+
+          const context = { isPreview: true, mode: 'production' };
+          const resolve = async value => typeof value === 'function' ? value(context) : value;
+          const project = await resolve(config);
+          const worker = await resolve(project.worker);
+          if (!worker) throw new Error('cloudflare.config.ts must define a Worker');
+
+          const { name, compatibilityDate, compatibilityFlags, assets, env } = worker;
+          const settings = { name, compatibilityDate, compatibilityFlags, assets };
+          // Only bindings to this deployment's bundled assets come from the project.
+          const assetBindings = Object.entries(env ?? {}).filter(([, binding]) => binding?.type === 'assets');
+          if (assetBindings.length) settings.env = Object.fromEntries(assetBindings);
+          writeFileSync(`${process.env.RUNNER_TEMP}/fork-preview-worker.json`, JSON.stringify(settings));
+          JS
 
       - name: Download Approved Worker Archive
         uses: actions/download-artifact@v8.0.2
@@ -97,6 +127,8 @@ jobs:
           skip-decompress: true
 
       - name: Prepare Worker Package
+        env:
+          WORKER_ENTRYPOINT: ${{ inputs.worker-entrypoint }}
         shell: bash
         run: |
           python3 - <<'PY'
@@ -138,23 +170,20 @@ jobs:
                   with archive.open(entry) as source, target.open('xb') as output:
                       shutil.copyfileobj(source, output)
 
-          config_path = Path(os.environ['GITHUB_WORKSPACE']) / '.github/fork-preview.json'
-          config = json.loads(config_path.read_text())
+          config = json.loads((temp / 'fork-preview-worker.json').read_text())
           if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,62}', config.get('name', '')):
-              raise SystemExit('Set name to the existing Cloudflare Worker in .github/fork-preview.json')
-          main = config.get('main', '')
-          if not re.fullmatch(r'worker/[\w.-]+\.(?:m?js)', main) or not (package / main).is_file():
+              raise SystemExit('Set the existing Worker name in cloudflare.config.ts')
+          bundle = package / 'worker'
+          main = os.environ['WORKER_ENTRYPOINT']
+          if not re.fullmatch(r'[\w.-]+\.(?:m?js)', main) or not (bundle / main).is_file():
               raise SystemExit('The Worker artifact is missing the configured module entry point')
-          if 'assets' in config and not (package / 'assets').is_dir():
+          assets = package / 'assets'
+          if ('assets' in config or 'env' in config) and not assets.is_dir():
               raise SystemExit('The Worker artifact is missing the configured assets')
 
-          allowed = {'name', 'main', 'compatibilityDate', 'compatibilityFlags', 'assets', 'env'}
-          if set(config) - allowed:
-              raise SystemExit('Use a standalone cf configuration with preview-only bindings')
-          bundle = package / 'worker'
           config['manifest'] = {
               'type': 'complete',
-              'mainModule': config.pop('main').removeprefix('worker/'),
+              'mainModule': main,
               'modules': {entry.relative_to(bundle).as_posix(): {'type': 'esm'}
                           for entry in bundle.rglob('*') if entry.is_file()},
           }
@@ -166,15 +195,9 @@ jobs:
           (output / 'config.json').write_text(json.dumps(root_config))
           (worker / 'worker.config.json').write_text(json.dumps(config))
           bundle.rename(worker / 'bundle')
-          if 'assets' in config:
-              (package / 'assets').rename(worker / 'assets')
+          if assets.is_dir():
+              assets.rename(worker / 'assets')
           PY
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7.1.0
-        with:
-          node-version: '26'
-          package-manager-cache: false
 
       - name: Verify Approval and PR Head
         uses: actions/github-script@v9.0.0
