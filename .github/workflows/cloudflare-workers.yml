@@ -392,70 +392,54 @@ jobs:
         with:
           script: |
             const fs = require('node:fs');
-            // cf reports command results as JSON objects carrying type and version on stdout
-            // (for example `cf previews deploy`). Scan from the end so build noise cannot win.
-            const lastResult = text => {
-              for (let i = text.length - 1; i >= 0; i--) {
-                if (text[i] !== '{') continue;
-                let depth = 0, inString = false, escaped = false, end = -1;
-                for (let j = i; j < text.length; j++) {
-                  const c = text[j];
-                  if (inString) {
-                    if (escaped) escaped = false;
-                    else if (c === '\\') escaped = true;
-                    else if (c === '"') inString = false;
-                  } else if (c === '"') inString = true;
-                  else if (c === '{') depth++;
-                  else if (c === '}') { depth--; if (depth === 0) { end = j; break; } }
-                }
-                if (end === -1) continue;
-                try {
-                  const value = JSON.parse(text.slice(i, end + 1));
-                  if (value && typeof value === 'object' && !Array.isArray(value) &&
-                      value.type && value.version !== undefined &&
-                      (process.env.MODE === 'preview' ? (value.preview_urls || value.preview_alias_url) :
-                        (value.targets || value.deployment_urls || value.preview_url))) return value;
-                } catch {}
+            const preview = process.env.MODE === 'preview';
+            const parseResult = text => {
+              let result;
+              try {
+                result = JSON.parse(text);
+              } catch {
+                return;
               }
-              return null;
+              if (!result?.type || result.version === undefined) return;
+              const hasUrls = preview ? result.preview_urls || result.preview_alias_url
+                : result.targets || result.deployment_urls || result.preview_url;
+              if (hasUrls) return result;
             };
-            const https = value => {
-              const url = new URL(value);
-              if (url.protocol !== 'https:' || url.username || url.password) {
-                throw new Error(`Invalid URL reported by cf: ${value}`);
-              }
-              return value;
-            };
-            const url = value => {
+            const normalizeUrl = value => {
               if (!value) return '';
               const trimmed = String(value).trim();
               const customDomain = trimmed.match(/^([a-z0-9.-]+) \(custom domain(?: - zone (?:name|id): [^)]+)?\)$/i);
               const host = customDomain ? customDomain[1] : trimmed;
-              return https(/^[a-z][a-z0-9+.-]*:\/\//i.test(host) ? host : `https://${host}`);
+              const address = /^[a-z][a-z0-9+.-]*:\/\//i.test(host) ? host : `https://${host}`;
+              const url = new URL(address);
+              if (url.protocol !== 'https:' || url.username || url.password) {
+                throw new Error(`Invalid URL reported by cf: ${address}`);
+              }
+              return address;
             };
-            const pick = list => {
+            const firstUrl = list => {
               if (!Array.isArray(list)) return '';
-              const value = list.find(item => typeof item === 'string' && item.trim());
-              return url(value);
+              return normalizeUrl(list.find(item => typeof item === 'string' && item.trim()));
             };
-            let r = lastResult(fs.readFileSync(process.env.CF_STDOUT, 'utf8'));
-            if (!r) {
+            // cf reports JSON on stdout or in Wrangler's NDJSON file, depending on the command and version.
+            let result = parseResult(fs.readFileSync(process.env.CF_STDOUT, 'utf8'));
+            if (!result) {
               try {
-                r = lastResult(fs.readFileSync(process.env.CF_NDJSON, 'utf8'));
+                result = fs.readFileSync(process.env.CF_NDJSON, 'utf8').split('\n').map(parseResult).findLast(Boolean);
               } catch (error) {
                 if (error.code !== 'ENOENT') throw error;
               }
             }
-            if (!r) throw new Error('cf did not report a result');
-            if (process.env.MODE === 'preview') {
-              const previewUrl = pick(r.preview_urls) || url(r.preview_alias_url);
-              const buildUrl = pick(r.deployment_urls) || url(r.preview_url);
+            if (!result) throw new Error('cf did not report a result');
+            if (preview) {
+              const previewUrl = firstUrl(result.preview_urls) || normalizeUrl(result.preview_alias_url);
+              const buildUrl = firstUrl(result.deployment_urls) || normalizeUrl(result.preview_url);
               if (!previewUrl || !buildUrl) throw new Error('cf preview result is missing preview_urls or deployment_urls');
-              core.setOutput('preview-name', String(r.preview_name ?? ''));
+              core.setOutput('preview-name', String(result.preview_name ?? ''));
               core.setOutput('preview-url', previewUrl);
               core.setOutput('preview-build-url', buildUrl);
             } else {
-              const deploymentUrl = pick(r.targets) || pick(r.deployment_urls) || url(r.preview_url);
+              const deploymentUrl = firstUrl(result.targets) || firstUrl(result.deployment_urls) || normalizeUrl(result.preview_url);
               if (!deploymentUrl) throw new Error('cf deploy result is missing its target URL');
               core.setOutput('deployment-url', deploymentUrl);
             }
