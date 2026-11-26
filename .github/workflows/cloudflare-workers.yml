@@ -349,8 +349,7 @@ jobs:
           PREBUILT: ${{ inputs.prebuilt }}
           CF_MODE: ${{ inputs.cf-mode }}
           PREVIEW_NAME: ${{ inputs.preview-name }}
-          CF_STDOUT: ${{ runner.temp }}/cf-stdout.log
-          # Some cf versions use this variable to write deployment results.
+          # cf deploy and cf previews deploy both write structured results here.
           WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/cf-output.ndjson
         shell: bash
         run: |
@@ -358,15 +357,14 @@ jobs:
           if [[ "$MODE" == preview ]]; then args=(previews deploy); fi
           if [[ -n "$PREVIEW_NAME" ]]; then args+=("$RUNNER_TEMP/static-preview" --preview-name "$PREVIEW_NAME"); fi
           if [[ "$PREBUILT" == true ]]; then args+=(--prebuilt --mode "$CF_MODE"); fi
-          ./node_modules/.bin/cf "${args[@]}" | tee "$CF_STDOUT"
+          ./node_modules/.bin/cf "${args[@]}"
 
       - name: Parse cf Result
         id: cf-parse
         uses: actions/github-script@v9.0.0
         env:
           MODE: ${{ inputs.mode }}
-          CF_STDOUT: ${{ runner.temp }}/cf-stdout.log
-          CF_NDJSON: ${{ runner.temp }}/cf-output.ndjson
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/cf-output.ndjson
         with:
           script: |
             const fs = require('node:fs');
@@ -399,15 +397,8 @@ jobs:
               if (!Array.isArray(list)) return '';
               return normalizeUrl(list.find(item => typeof item === 'string' && item.trim()));
             };
-            // cf reports JSON on stdout or in the NDJSON file, depending on the command and version.
-            let result = parseResult(fs.readFileSync(process.env.CF_STDOUT, 'utf8'));
-            if (!result) {
-              try {
-                result = fs.readFileSync(process.env.CF_NDJSON, 'utf8').split('\n').map(parseResult).findLast(Boolean);
-              } catch (error) {
-                if (error.code !== 'ENOENT') throw error;
-              }
-            }
+            const result = fs.readFileSync(process.env.WRANGLER_OUTPUT_FILE_PATH, 'utf8')
+              .split('\n').map(parseResult).findLast(Boolean);
             if (!result) throw new Error('cf did not report a result');
             if (preview) {
               const previewUrl = firstUrl(result.preview_urls) || normalizeUrl(result.preview_alias_url);

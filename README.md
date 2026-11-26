@@ -10,7 +10,7 @@ Reusable GitHub Actions workflows for the [FOSSBilling](https://fossbilling.org/
 
 ## Deploy a Worker
 
-Commit `cloudflare.config.ts` at the repository root and pin `cf` in the caller’s dependencies. This example expects a `build` job to upload production build output from `.cloudflare/output/` as `worker-build` with `include-hidden-files: true`.
+Commit `cloudflare.config.ts` at the repository root and pin `cf` 1.0.0-beta.18 or newer in the caller’s dependencies. This example expects a `build` job to upload production build output from `.cloudflare/output/` as `worker-build` with `include-hidden-files: true`.
 
 ```yaml
 jobs:
