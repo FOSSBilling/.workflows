@@ -89,23 +89,6 @@ jobs:
       name: fork-preview
       url: ${{ steps.deploy.outputs.url }}
     steps:
-      - name: Verify GitHub Deployment Review
-        uses: actions/github-script@v9.0.0
-        env:
-          PR_NUMBER: ${{ needs.prepare.outputs.pr-number }}
-        with:
-          script: |
-            const { data: pr } = await github.rest.pulls.get({
-              ...context.repo, pull_number: Number(process.env.PR_NUMBER),
-            });
-            const { data: reviews } = await github.request('GET /repos/{owner}/{repo}/actions/runs/{run_id}/approvals', {
-              ...context.repo, run_id: context.runId,
-            });
-            const reviewed = reviews.some(review => review.state === 'approved' &&
-              review.user?.type === 'User' && review.user.id !== pr.user.id &&
-              review.environments.some(environment => environment.name === 'fork-preview'));
-            if (!reviewed) throw new Error('Approve this deployment through GitHub as a configured reviewer other than the PR author.');
-
       - name: Checkout Trusted Preview Configuration
         uses: actions/checkout@v7.0.1
         with:
@@ -216,7 +199,7 @@ jobs:
           node-version: '26'
           package-manager-cache: false
 
-      - name: Verify the PR Is Still Current
+      - name: Verify Approval and PR Head
         uses: actions/github-script@v9.0.0
         env:
           PR_NUMBER: ${{ needs.prepare.outputs.pr-number }}
@@ -231,6 +214,13 @@ jobs:
                 pr.head.ref !== run.head_branch || pr.head.sha !== run.head_sha) {
               throw new Error('The approved preview no longer matches the current open fork PR');
             }
+            const { data: reviews } = await github.request('GET /repos/{owner}/{repo}/actions/runs/{run_id}/approvals', {
+              ...context.repo, run_id: context.runId,
+            });
+            const reviewed = reviews.some(review => review.state === 'approved' &&
+              review.user?.type === 'User' && review.user.id !== pr.user.id &&
+              review.environments.some(environment => environment.name === 'fork-preview'));
+            if (!reviewed) throw new Error('Approve this deployment through GitHub as a configured reviewer other than the PR author.');
 
       - name: Deploy Fork Worker Preview
         id: deploy
@@ -268,16 +258,16 @@ jobs:
           fi
           unset PREVIEW_SECRET_VALUES
 
-          result_path="$RUNNER_TEMP/fork-worker-result.ndjson"
           if [[ "$PREVIEW_CLI" == cf ]]; then
-            GITHUB_SHA="$APPROVED_HEAD_SHA" WRANGLER_OUTPUT_FILE_PATH="$result_path" \
-              npx --yes --ignore-scripts "cf@$CF_VERSION" previews deploy --prebuilt \
-              --preview-name "$PREVIEW_NAME" "${secret_args[@]}" > /dev/null
+            cli_package="cf@$CF_VERSION"
+            args=(previews deploy --prebuilt --preview-name "$PREVIEW_NAME")
           else
-            GITHUB_SHA="$APPROVED_HEAD_SHA" WRANGLER_OUTPUT_FILE_PATH="$result_path" \
-              npx --yes --ignore-scripts "wrangler@$WRANGLER_VERSION" preview --config wrangler.json \
-              --name "$PREVIEW_NAME" --ignore-base-config --json "${secret_args[@]}" > /dev/null
+            cli_package="wrangler@$WRANGLER_VERSION"
+            args=(preview --config wrangler.json --name "$PREVIEW_NAME" --ignore-base-config --json)
           fi
+          result_path="$RUNNER_TEMP/fork-worker-result.ndjson"
+          GITHUB_SHA="$APPROVED_HEAD_SHA" WRANGLER_OUTPUT_FILE_PATH="$result_path" \
+            npx --yes --ignore-scripts "$cli_package" "${args[@]}" "${secret_args[@]}" > /dev/null
           url=$(jq -ser --arg name "$PREVIEW_NAME" '
             map(select(.type == "preview" and .preview_name == $name)) | last | .preview_urls[0]
             | select(type == "string" and test("^https://[A-Za-z0-9.-]+/?$"))' "$result_path")
