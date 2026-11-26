@@ -52,21 +52,26 @@ For static fork previews with reserved `pr-<number>` names, call `cloudflare-for
 
 Use `cloudflare-fork-worker-preview.yml` for a Worker that needs server code in its fork previews. It finds the PR for a successful fork CI run and queues a deployment of that commit. Open the run from the preview workflow and use **Review deployments** to approve it. The deploy job checks the recorded approval and verifies the PR head again before uploading. To retry a failed upload, rerun all jobs in fork CI to get a fresh deployment review.
 
-Before enabling the caller, set up a separate Cloudflare account for fork previews, provision a Worker named `<repository>-forks`, and restrict access to its preview hostname. Use test data and credentials that can safely be read by code running in the preview. Configure **Required reviewers** for the `fork-preview` GitHub environment and add its `FORK_PREVIEW_CLOUDFLARE_ACCOUNT_ID` and `FORK_PREVIEW_CLOUDFLARE_API_TOKEN` secrets. The job creates previews with `--ignore-base-config`. Use the optional `FORK_PREVIEW_WORKER_SECRETS_JSON` environment secret for a JSON object of test Worker secrets. Wrangler can retain secrets already set on an existing preview. See [GitHub deployment reviews](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments) for plan availability.
+Before enabling the caller, set up a separate Cloudflare account for fork previews, provision a Worker named `<repository>-forks`, and restrict access to its preview hostname. Use test data and credentials that can safely be read by code running in the preview. Configure **Required reviewers** for the `fork-preview` GitHub environment and add its `FORK_PREVIEW_CLOUDFLARE_ACCOUNT_ID` and `FORK_PREVIEW_CLOUDFLARE_API_TOKEN` secrets. Use the optional `FORK_PREVIEW_WORKER_SECRETS_JSON` environment secret for a JSON object of test Worker secrets. Cloudflare can retain secrets already set on an existing preview. See [GitHub deployment reviews](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments) for plan availability.
 
-Commit `.github/fork-preview.json` on the default branch. Use Wrangler JSON fields for the entry point, compatibility settings, optional asset settings, and non-production bindings under `previews`. For example, a repo named `auth` could use the following with its own staging bindings.
+Commit `.github/fork-preview.json` on the default branch. With the default `cli: cf`, use `main` for the artifact entry point and Cloudflare Worker configuration fields for compatibility settings, optional `assets`, and staging bindings under `env`. The workflow assembles fresh Preview Build Output from this config and the approved artifact. `cf previews deploy --prebuilt` uses it without running Vite. Keep the staging Worker's Previews Base free of runtime bindings so new previews only get the bindings you supply. For example, a repo named `auth` could start with the following and add its staging bindings.
 
 ```json
 {
   "name": "auth-forks",
   "main": "worker/index.js",
-  "compatibility_date": "2026-11-26",
-  "assets": { "binding": "ASSETS" },
-  "previews": { "vars": { "ENVIRONMENT": "fork-preview" } }
+  "compatibilityDate": "2026-11-26",
+  "assets": {},
+  "env": {
+    "ASSETS": { "type": "assets" },
+    "ENVIRONMENT": { "type": "text", "value": "fork-preview" }
+  }
 }
 ```
 
-In the unprivileged `pull_request` workflow, build the exact PR head and upload a ZIP artifact named `fork-worker-${{ github.run_attempt }}`. Put the compiled ES modules and any JavaScript chunks under `worker/` and any static output under `assets/`. For `auth`, the staged files come from the Cloudflare Build Output `bundle/` and `assets/` directories. For `extensions`, the Astro server entry and chunks go under `worker/` and the client build goes under `assets/`. Stage only the needed files and preserve relative imports. The uploader accepts `.js` and `.mjs` modules, up to 20,000 archive entries and 256 MiB uncompressed. The deployer uses the default branch configuration and uploads the package without running the fork's build or installing its dependencies.
+For `cli: wrangler`, use Wrangler JSON fields in the same file. Set `main`, `compatibility_date`, optional `assets`, and `previews` with the staging bindings. The workflow uses Wrangler's `no_bundle` and `--ignore-base-config` options.
+
+In the unprivileged `pull_request` workflow, build the exact PR head and upload a ZIP artifact named `fork-worker-${{ github.run_attempt }}`. Put the compiled ES modules and any JavaScript chunks under `worker/` and any static output under `assets/`. For `auth`, the Cloudflare Vite plugin produces these files in the Build Output `bundle/` and `assets/` directories. For `extensions`, the Astro server entry and chunks go under `worker/` and the client build goes under `assets/`. Copy the modules and assets only, preserving relative imports. The uploader accepts `.js` and `.mjs` modules, up to 20,000 archive entries and 256 MiB uncompressed. The deployer uses the default branch configuration and uploads the package without running the fork's build or installing its dependencies.
 
 Call the reusable workflow from a completed `workflow_run`. Use the CI workflow's display name under `workflows` and its filename under `build-workflow`. Pin the reusable workflow to a reviewed commit and pass the environment secrets by name.
 
@@ -85,6 +90,7 @@ jobs:
     uses: FOSSBilling/.workflows/.github/workflows/cloudflare-fork-worker-preview.yml@<commit-sha>
     with:
       build-workflow: ci-cd.yml
+      cli: cf
     secrets:
       FORK_PREVIEW_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.FORK_PREVIEW_CLOUDFLARE_ACCOUNT_ID }}
       FORK_PREVIEW_CLOUDFLARE_API_TOKEN: ${{ secrets.FORK_PREVIEW_CLOUDFLARE_API_TOKEN }}

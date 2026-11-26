@@ -7,6 +7,10 @@ on:
         description: Filename of the workflow that publishes the fork Worker artifact.
         required: true
         type: string
+      cli:
+        description: Preview deployment CLI (cf or wrangler).
+        type: string
+        default: cf
     secrets:
       FORK_PREVIEW_CLOUDFLARE_ACCOUNT_ID:
         required: true
@@ -34,8 +38,12 @@ jobs:
         uses: actions/github-script@v9.0.0
         env:
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
+          PREVIEW_CLI: ${{ inputs.cli }}
         with:
           script: |
+            if (!['cf', 'wrangler'].includes(process.env.PREVIEW_CLI)) {
+              throw new Error('cli must be cf or wrangler');
+            }
             const { repository, workflow_run: run } = context.payload;
             const fork = run.head_repository;
             if (run.path !== `.github/workflows/${process.env.BUILD_WORKFLOW}` ||
@@ -116,6 +124,8 @@ jobs:
           skip-decompress: true
 
       - name: Prepare Worker Package
+        env:
+          PREVIEW_CLI: ${{ inputs.cli }}
         shell: bash
         run: |
           python3 - <<'PY'
@@ -165,16 +175,39 @@ jobs:
           main = config.get('main', '')
           if not re.fullmatch(r'worker/[\w.-]+\.(?:m?js)', main) or not (package / main).is_file():
               raise SystemExit('The Worker artifact is missing the configured module entry point')
-          allowed = ('name', 'main', 'compatibility_date', 'compatibility_flags', 'assets', 'previews')
-          if set(config) - set(allowed) or not isinstance(config.get('previews'), dict):
-              raise SystemExit('Use a standalone preview configuration with preview-only bindings')
-          if 'assets' in config:
-              if not (package / 'assets').is_dir():
-                  raise SystemExit('The Worker artifact is missing the configured assets')
-              config['assets']['directory'] = 'assets'
-          config.update(no_bundle=True, find_additional_modules=True, base_dir='worker',
-                        rules=[{'type': 'ESModule', 'globs': ['**/*.js', '**/*.mjs'], 'fallthrough': True}])
-          (package / 'wrangler.json').write_text(json.dumps(config))
+          if 'assets' in config and not (package / 'assets').is_dir():
+              raise SystemExit('The Worker artifact is missing the configured assets')
+
+          if os.environ['PREVIEW_CLI'] == 'wrangler':
+              allowed = {'name', 'main', 'compatibility_date', 'compatibility_flags', 'assets', 'previews'}
+              if set(config) - allowed or not isinstance(config.get('previews'), dict):
+                  raise SystemExit('Use a standalone Wrangler configuration with preview-only bindings')
+              if 'assets' in config:
+                  config['assets']['directory'] = 'assets'
+              config.update(no_bundle=True, find_additional_modules=True, base_dir='worker',
+                            rules=[{'type': 'ESModule', 'globs': ['**/*.js', '**/*.mjs'], 'fallthrough': True}])
+              (package / 'wrangler.json').write_text(json.dumps(config))
+          else:
+              allowed = {'name', 'main', 'compatibilityDate', 'compatibilityFlags', 'assets', 'env'}
+              if set(config) - allowed:
+                  raise SystemExit('Use a standalone cf configuration with preview-only bindings')
+              bundle = package / 'worker'
+              config['manifest'] = {
+                  'type': 'complete',
+                  'mainModule': config.pop('main').removeprefix('worker/'),
+                  'modules': {entry.relative_to(bundle).as_posix(): {'type': 'esm'}
+                              for entry in bundle.rglob('*') if entry.is_file()},
+              }
+              output = package / '.cloudflare/output/v1'
+              worker = output / 'workers/default'
+              worker.mkdir(parents=True)
+              root_config = {'producer': {'name': 'fossbilling-fork-preview', 'version': '1'},
+                             'buildContext': {'isPreview': True}}
+              (output / 'config.json').write_text(json.dumps(root_config))
+              (worker / 'worker.config.json').write_text(json.dumps(config))
+              bundle.rename(worker / 'bundle')
+              if 'assets' in config:
+                  (package / 'assets').rename(worker / 'assets')
           PY
 
       - name: Setup Node.js
@@ -203,6 +236,10 @@ jobs:
         id: deploy
         working-directory: ${{ runner.temp }}/fork-worker-package
         env:
+          PREVIEW_CLI: ${{ inputs.cli }}
+          # renovate: datasource=npm depName=cf
+          CF_VERSION: '1.0.0-rc.4'
+          CF_SEND_TELEMETRY: 'false'
           # renovate: datasource=npm depName=wrangler
           WRANGLER_VERSION: '4.166.0'
           WRANGLER_SEND_METRICS: 'false'
@@ -220,19 +257,33 @@ jobs:
             exit 1
           fi
 
-          args=(preview --config wrangler.json --name "$PREVIEW_NAME" --ignore-base-config --json)
+          secret_args=()
           if [[ -n "$PREVIEW_SECRET_VALUES" ]]; then
             secrets_path=$(mktemp "$RUNNER_TEMP/worker-secrets.XXXXXX.json")
             trap 'rm -f -- "$secrets_path"' EXIT
             jq -e 'if type == "object" and all(.[]; type == "string") then . else error("Expected a string-valued object") end' \
               <<< "$PREVIEW_SECRET_VALUES" > "$secrets_path"
-            args+=(--secrets-file "$secrets_path")
+            secret_args=(--secrets-file "$secrets_path")
           fi
           unset PREVIEW_SECRET_VALUES
 
           result_path="$RUNNER_TEMP/fork-worker-result.ndjson"
-          GITHUB_SHA="$APPROVED_HEAD_SHA" WRANGLER_OUTPUT_FILE_PATH="$result_path" \
-            npx --yes --ignore-scripts "wrangler@$WRANGLER_VERSION" "${args[@]}" > /dev/null
+          if [[ "$PREVIEW_CLI" == cf ]]; then
+            cf=(npx --yes --ignore-scripts "cf@$CF_VERSION")
+            worker=$(jq -er '.name' .cloudflare/output/v1/workers/default/worker.config.json)
+            # cf uses the Worker's Previews Base when it creates a preview.
+            if ! "${cf[@]}" workers get "$worker" | jq -e --arg name "$worker" '
+              .name == $name and (.previews_base_config.env == null or .previews_base_config.env == {})' > /dev/null; then
+              echo 'The staging Worker must exist and its Previews Base must have no runtime bindings' >&2
+              exit 1
+            fi
+            GITHUB_SHA="$APPROVED_HEAD_SHA" WRANGLER_OUTPUT_FILE_PATH="$result_path" \
+              "${cf[@]}" previews deploy --prebuilt --preview-name "$PREVIEW_NAME" "${secret_args[@]}" > /dev/null
+          else
+            GITHUB_SHA="$APPROVED_HEAD_SHA" WRANGLER_OUTPUT_FILE_PATH="$result_path" \
+              npx --yes --ignore-scripts "wrangler@$WRANGLER_VERSION" preview --config wrangler.json \
+              --name "$PREVIEW_NAME" --ignore-base-config --json "${secret_args[@]}" > /dev/null
+          fi
           url=$(jq -ser --arg name "$PREVIEW_NAME" '
             map(select(.type == "preview" and .preview_name == $name)) | last | .preview_urls[0]
             | select(type == "string" and test("^https://[A-Za-z0-9.-]+/?$"))' "$result_path")
