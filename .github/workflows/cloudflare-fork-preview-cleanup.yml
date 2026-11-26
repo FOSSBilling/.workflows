@@ -7,6 +7,10 @@ on:
         description: Worker whose pr-<number> preview names are reserved for fork PRs.
         required: true
         type: string
+      environment:
+        description: GitHub environment holding the cleanup credentials.
+        default: preview
+        type: string
     secrets:
       CLOUDFLARE_API_TOKEN:
         required: true
@@ -21,7 +25,7 @@ jobs:
     permissions:
       pull-requests: read
     environment:
-      name: preview
+      name: ${{ inputs.environment }}
       deployment: false
     steps:
       - name: Find Closed Fork PRs

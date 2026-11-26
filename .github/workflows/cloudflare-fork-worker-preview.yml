@@ -1,0 +1,240 @@
+name: Cloudflare Fork Worker Preview
+
+on:
+  workflow_call:
+    inputs:
+      build-workflow:
+        description: Filename of the workflow that publishes the fork Worker artifact.
+        required: true
+        type: string
+    secrets:
+      FORK_PREVIEW_CLOUDFLARE_ACCOUNT_ID:
+        required: true
+      FORK_PREVIEW_CLOUDFLARE_API_TOKEN:
+        required: true
+      FORK_PREVIEW_WORKER_SECRETS_JSON:
+        required: false
+
+jobs:
+  prepare:
+    if: >-
+      github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' && github.run_attempt == 1
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      pull-requests: read
+    outputs:
+      pr-number: ${{ steps.target.outputs.pr-number }}
+      artifact-id: ${{ steps.target.outputs.artifact-id }}
+    steps:
+      - name: Find Preview Candidate
+        id: target
+        uses: actions/github-script@v9.0.0
+        env:
+          BUILD_WORKFLOW: ${{ inputs.build-workflow }}
+        with:
+          script: |
+            const { repository, workflow_run: run } = context.payload;
+            const fork = run.head_repository;
+            if (run.path !== `.github/workflows/${process.env.BUILD_WORKFLOW}` ||
+                context.ref !== `refs/heads/${repository.default_branch}` ||
+                !fork?.owner?.login || fork.id === repository.id || !run.head_branch) return;
+
+            const prs = await github.paginate(github.rest.pulls.list, {
+              ...context.repo, state: 'open', base: repository.default_branch,
+              head: `${fork.owner.login}:${run.head_branch}`, per_page: 100,
+            });
+            const matches = prs.filter(pr => pr.head.repo?.id === fork.id &&
+              pr.head.ref === run.head_branch && pr.head.sha === run.head_sha);
+            if (matches.length !== 1) return;
+
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              ...context.repo, run_id: run.id, per_page: 100,
+            });
+            const builds = artifacts.filter(artifact => !artifact.expired &&
+              artifact.size_in_bytes <= 256 * 1024 ** 2 &&
+              artifact.name === `fork-worker-${run.run_attempt}`);
+            if (builds.length !== 1) return;
+
+            const [pr] = matches;
+            core.setOutput('pr-number', pr.number);
+            core.setOutput('artifact-id', builds[0].id);
+            await core.summary.addLink(`Review PR #${pr.number}`, pr.html_url).addBreak()
+              .addLink(`Successful CI for ${run.head_sha}`, run.html_url).write();
+
+  deploy:
+    name: 'Preview PR #${{ needs.prepare.outputs.pr-number }} at ${{ github.event.workflow_run.head_sha }}'
+    needs: prepare
+    if: needs.prepare.outputs.artifact-id != '' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    concurrency:
+      group: fork-worker-preview-${{ needs.prepare.outputs.pr-number }}
+      cancel-in-progress: true
+    environment:
+      name: fork-preview
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - name: Verify GitHub Deployment Review
+        uses: actions/github-script@v9.0.0
+        env:
+          PR_NUMBER: ${{ needs.prepare.outputs.pr-number }}
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: Number(process.env.PR_NUMBER),
+            });
+            const { data: reviews } = await github.request('GET /repos/{owner}/{repo}/actions/runs/{run_id}/approvals', {
+              ...context.repo, run_id: context.runId,
+            });
+            const reviewed = reviews.some(review => review.state === 'approved' &&
+              review.user?.type === 'User' && review.user.id !== pr.user.id &&
+              review.environments.some(environment => environment.name === 'fork-preview'));
+            if (!reviewed) throw new Error('Approve this deployment through GitHub as a configured reviewer other than the PR author.');
+
+      - name: Checkout Trusted Preview Configuration
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/fork-preview.json
+          sparse-checkout-cone-mode: false
+
+      - name: Download Approved Worker Archive
+        uses: actions/download-artifact@v8.0.2
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.artifact-id }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/fork-worker-download
+          skip-decompress: true
+
+      - name: Prepare Worker Package
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import shutil
+          import stat
+          import zipfile
+          from pathlib import Path
+
+          temp = Path(os.environ['RUNNER_TEMP'])
+          package = temp / 'fork-worker-package'
+          package.mkdir()
+          archives = list((temp / 'fork-worker-download').iterdir())
+          if len(archives) != 1 or not archives[0].is_file():
+              raise SystemExit('Expected one Worker artifact archive')
+
+          with zipfile.ZipFile(archives[0]) as archive:
+              seen = set()
+              entries = archive.infolist()
+              if len(entries) > 20_000 or sum(entry.file_size for entry in entries) > 256 * 1024**2:
+                  raise SystemExit('Worker archive exceeds the file count or size limit')
+              for entry in entries:
+                  parts = entry.filename.removesuffix('/').split('/')
+                  kind = stat.S_IFMT(entry.external_attr >> 16)
+                  expected = stat.S_IFDIR if entry.is_dir() else stat.S_IFREG
+                  if (parts[0] not in ('worker', 'assets') or
+                      any(part in ('', '.', '..') or '\\' in part or any(ord(c) < 32 or ord(c) == 127 for c in part) for part in parts) or
+                      kind not in (0, expected) or tuple(parts) in seen):
+                      raise SystemExit('Worker archive contains an invalid or duplicate path')
+                  seen.add(tuple(parts))
+                  if entry.is_dir():
+                      continue
+                  if len(parts) < 2 or (parts[0] == 'worker' and not parts[-1].endswith(('.js', '.mjs'))):
+                      raise SystemExit('Worker archive must contain only JavaScript modules and static assets')
+                  target = package.joinpath(*parts)
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  with archive.open(entry) as source, target.open('xb') as output:
+                      shutil.copyfileobj(source, output)
+
+          config_path = Path(os.environ['GITHUB_WORKSPACE']) / '.github/fork-preview.json'
+          config = json.loads(config_path.read_text())
+          worker_name = os.environ['GITHUB_REPOSITORY'].split('/')[1].lower() + '-forks'
+          if config.get('name') != worker_name or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,62}', worker_name):
+              raise SystemExit('The staging Worker must be named <repository>-forks')
+          main = config.get('main', '')
+          if not re.fullmatch(r'worker/[\w.-]+\.(?:m?js)', main) or not (package / main).is_file():
+              raise SystemExit('The Worker artifact is missing the configured module entry point')
+          allowed = ('name', 'main', 'compatibility_date', 'compatibility_flags', 'assets', 'previews')
+          if set(config) - set(allowed) or not isinstance(config.get('previews'), dict):
+              raise SystemExit('Use a standalone preview configuration with preview-only bindings')
+          if 'assets' in config:
+              if not (package / 'assets').is_dir():
+                  raise SystemExit('The Worker artifact is missing the configured assets')
+              config['assets']['directory'] = 'assets'
+          config.update(no_bundle=True, find_additional_modules=True, base_dir='worker',
+                        rules=[{'type': 'ESModule', 'globs': ['**/*.js', '**/*.mjs'], 'fallthrough': True}])
+          (package / 'wrangler.json').write_text(json.dumps(config))
+          PY
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '26'
+          package-manager-cache: false
+
+      - name: Verify the PR Is Still Current
+        uses: actions/github-script@v9.0.0
+        env:
+          PR_NUMBER: ${{ needs.prepare.outputs.pr-number }}
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: Number(process.env.PR_NUMBER),
+            });
+            const { repository, workflow_run: run } = context.payload;
+            if (pr.state !== 'open' || pr.base.ref !== repository.default_branch ||
+                pr.base.repo.id !== repository.id || pr.head.repo?.id !== run.head_repository.id ||
+                pr.head.ref !== run.head_branch || pr.head.sha !== run.head_sha) {
+              throw new Error('The approved preview no longer matches the current open fork PR');
+            }
+
+      - name: Deploy Fork Worker Preview
+        id: deploy
+        working-directory: ${{ runner.temp }}/fork-worker-package
+        env:
+          # renovate: datasource=npm depName=wrangler
+          WRANGLER_VERSION: '4.166.0'
+          WRANGLER_SEND_METRICS: 'false'
+          CLOUDFLARE_API_TOKEN: ${{ secrets.FORK_PREVIEW_CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.FORK_PREVIEW_CLOUDFLARE_ACCOUNT_ID }}
+          PRODUCTION_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          APPROVED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PREVIEW_NAME: pr-${{ needs.prepare.outputs.pr-number }}
+          PREVIEW_SECRET_VALUES: ${{ secrets.FORK_PREVIEW_WORKER_SECRETS_JSON }}
+        shell: bash
+        run: |
+          if [[ ! "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ || -z "$CLOUDFLARE_API_TOKEN" ||
+                "$CLOUDFLARE_ACCOUNT_ID" == "$PRODUCTION_ACCOUNT_ID" ]]; then
+            echo 'Configure the fork-preview environment with credentials for a separate Cloudflare account' >&2
+            exit 1
+          fi
+
+          args=(preview --config wrangler.json --name "$PREVIEW_NAME" --ignore-base-config --json)
+          if [[ -n "$PREVIEW_SECRET_VALUES" ]]; then
+            secrets_path=$(mktemp "$RUNNER_TEMP/worker-secrets.XXXXXX.json")
+            trap 'rm -f -- "$secrets_path"' EXIT
+            jq -e 'if type == "object" and all(.[]; type == "string") then . else error("Expected a string-valued object") end' \
+              <<< "$PREVIEW_SECRET_VALUES" > "$secrets_path"
+            args+=(--secrets-file "$secrets_path")
+          fi
+          unset PREVIEW_SECRET_VALUES
+
+          result_path="$RUNNER_TEMP/fork-worker-result.ndjson"
+          GITHUB_SHA="$APPROVED_HEAD_SHA" WRANGLER_OUTPUT_FILE_PATH="$result_path" \
+            npx --yes --ignore-scripts "wrangler@$WRANGLER_VERSION" "${args[@]}" > /dev/null
+          url=$(jq -ser --arg name "$PREVIEW_NAME" '
+            map(select(.type == "preview" and .preview_name == $name)) | last | .preview_urls[0]
+            | select(type == "string" and test("^https://[A-Za-z0-9.-]+/?$"))' "$result_path")
+          printf 'url=%s\n' "$url" >> "$GITHUB_OUTPUT"
+          printf '[Open the approved fork preview](%s)\n' "$url" >> "$GITHUB_STEP_SUMMARY"
