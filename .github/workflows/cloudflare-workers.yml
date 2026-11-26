@@ -8,7 +8,7 @@ on:
         default: deploy
         type: string
       preview-name:
-        description: Explicit name for a checked static cf preview or its cleanup from a trusted workflow_run.
+        description: Name for a static preview deployed from a trusted workflow_run.
         type: string
         default: ''
       reserve-fork-preview-names:
@@ -152,8 +152,8 @@ jobs:
               const staticPreview = operation === 'deploy' && process.env.MODE === 'preview' &&
                 process.env.PREBUILT === 'false';
               if (context.eventName !== 'workflow_run' || !/^[a-z0-9][a-z0-9-]*$/.test(process.env.PREVIEW_NAME) ||
-                  (!staticPreview && operation !== 'delete-preview')) {
-                throw new Error('preview-name requires a workflow_run static cf preview or preview cleanup and a lowercase slug');
+                  !staticPreview) {
+                throw new Error('preview-name requires a static preview deployed from workflow_run and a lowercase slug');
               }
             }
             if (operation === 'deploy') {
@@ -191,8 +191,7 @@ jobs:
     needs: validate
     if: >-
       inputs.operation == 'delete-preview' &&
-      (inputs.preview-name != '' ||
-       (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      ((github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository) ||
        (github.event_name == 'delete' && github.event.ref_type == 'branch' && github.event.ref != '' && github.event.ref != github.event.repository.default_branch))
     runs-on: ubuntu-slim
     timeout-minutes: 10
@@ -204,7 +203,6 @@ jobs:
     steps:
       - name: Check Branch Preview Cleanup
         id: branch-cleanup
-        if: inputs.preview-name == ''
         uses: actions/github-script@v9.0.0
         env:
           RESERVE_FORK_PREVIEW_NAMES: ${{ inputs.reserve-fork-preview-names }}
@@ -228,11 +226,11 @@ jobs:
             core.notice(`Skipping preview cleanup because ${ref} exists again`);
             return false;
       - name: Delete Preview
-        if: inputs.preview-name != '' || steps.branch-cleanup.outputs.result == 'true'
+        if: steps.branch-cleanup.outputs.result == 'true'
         env:
           # renovate: datasource=npm depName=cf
           CF_VERSION: '1.0.0-rc.3'
-          PREVIEW_NAME: ${{ inputs.preview-name || github.event.pull_request.head.ref || github.event.ref }}
+          PREVIEW_NAME: ${{ github.event.pull_request.head.ref || github.event.ref }}
           WORKER_NAME: ${{ inputs.worker-name }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
