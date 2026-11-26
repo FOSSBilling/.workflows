@@ -12,9 +12,9 @@ on:
         type: string
         default: cf
     secrets:
-      FORK_PREVIEW_CLOUDFLARE_ACCOUNT_ID:
+      CLOUDFLARE_ACCOUNT_ID:
         required: true
-      FORK_PREVIEW_CLOUDFLARE_API_TOKEN:
+      CLOUDFLARE_API_TOKEN:
         required: true
       FORK_PREVIEW_WORKER_SECRETS_JSON:
         required: false
@@ -152,9 +152,8 @@ jobs:
 
           config_path = Path(os.environ['GITHUB_WORKSPACE']) / '.github/fork-preview.json'
           config = json.loads(config_path.read_text())
-          worker_name = os.environ['GITHUB_REPOSITORY'].split('/')[1].lower() + '-forks'
-          if config.get('name') != worker_name or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,62}', worker_name):
-              raise SystemExit('The staging Worker must be named <repository>-forks')
+          if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,62}', config.get('name', '')):
+              raise SystemExit('Set name to the existing Cloudflare Worker in .github/fork-preview.json')
           main = config.get('main', '')
           if not re.fullmatch(r'worker/[\w.-]+\.(?:m?js)', main) or not (package / main).is_file():
               raise SystemExit('The Worker artifact is missing the configured module entry point')
@@ -233,18 +232,15 @@ jobs:
           # renovate: datasource=npm depName=wrangler
           WRANGLER_VERSION: '4.166.0'
           WRANGLER_SEND_METRICS: 'false'
-          CLOUDFLARE_API_TOKEN: ${{ secrets.FORK_PREVIEW_CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.FORK_PREVIEW_CLOUDFLARE_ACCOUNT_ID }}
-          PRODUCTION_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           APPROVED_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           PREVIEW_NAME: pr-${{ needs.prepare.outputs.pr-number }}
           PREVIEW_SECRET_VALUES: ${{ secrets.FORK_PREVIEW_WORKER_SECRETS_JSON }}
         shell: bash
         run: |
-          if [[ ! "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ || ! "$PRODUCTION_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ||
-                -z "$CLOUDFLARE_API_TOKEN" ||
-                "$CLOUDFLARE_ACCOUNT_ID" == "$PRODUCTION_ACCOUNT_ID" ]]; then
-            echo 'Set the production CLOUDFLARE_ACCOUNT_ID variable and separate Cloudflare credentials in the fork-preview environment' >&2
+          if [[ -z "$CLOUDFLARE_ACCOUNT_ID" || -z "$CLOUDFLARE_API_TOKEN" ]]; then
+            echo 'Set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for fork preview deployment' >&2
             exit 1
           fi
 

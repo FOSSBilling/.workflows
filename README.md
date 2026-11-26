@@ -12,7 +12,7 @@ uses: FOSSBilling/.workflows/.github/workflows/<workflow>.yml@main
 | --- | --- | --- |
 | [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) | Reusable (`workflow_call`) | Deploys Workers with Wrangler or `cf`, syncs preview comments, and cleans up previews. |
 | [`cloudflare-fork-preview-cleanup.yml`](.github/workflows/cloudflare-fork-preview-cleanup.yml) | Reusable (`workflow_call`) | Removes reserved `pr-<number>` previews for closed fork PRs on a schedule. |
-| [`cloudflare-fork-worker-preview.yml`](.github/workflows/cloudflare-fork-worker-preview.yml) | Reusable (`workflow_call`) | Deploys an approved fork Worker bundle to a dedicated Cloudflare account. |
+| [`cloudflare-fork-worker-preview.yml`](.github/workflows/cloudflare-fork-worker-preview.yml) | Reusable (`workflow_call`) | Deploys approved fork code as a named Cloudflare Worker Preview. |
 | [`actionlint.yml`](.github/workflows/actionlint.yml) | CI for this repo | Lints all workflow files with [actionlint](https://github.com/rhysd/actionlint), run via a digest-pinned Docker image on every push and pull request. |
 | [`verify-lockfile.yml`](.github/workflows/verify-lockfile.yml) | CI for this repo | Verifies [`actions.lock`](.github/workflows/actions.lock) with `gh actions-lock --verify` whenever workflow files change. |
 
@@ -52,17 +52,17 @@ For static fork previews, call `cloudflare-fork-preview-cleanup.yml` on a schedu
 
 Successful fork CI queues the commit for GitHub’s **Review deployments** approval. The deploy job verifies the approval and current PR head before uploading. To retry a failed upload, rerun all jobs in fork CI.
 
-Set up the staging deployment before enabling the caller.
+Use the existing Cloudflare account and Worker. The job publishes a named `pr-<number>` Preview. Reserve those names in branch builds and set `reserve-fork-preview-names: true` on branch cleanup.
 
-- Provision `<repository>-forks` in a separate Cloudflare account and restrict access to its preview hostname. Set `CLOUDFLARE_ACCOUNT_ID` to the production account ID in GitHub Actions variables.
-- Configure [required reviewers](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments) on the `fork-preview` environment. Store the staging account ID and token there as `FORK_PREVIEW_CLOUDFLARE_ACCOUNT_ID` and `FORK_PREVIEW_CLOUDFLARE_API_TOKEN`.
-- Use only test bindings and credentials safe to expose to fork code, including in Cloudflare’s Previews Base. Set Worker secrets as a JSON object in the optional `FORK_PREVIEW_WORKER_SECRETS_JSON` environment secret. Existing previews can retain their previously deployed secrets.
+Configure [required reviewers](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/review-deployments) on the `fork-preview` environment and store `CLOUDFLARE_API_TOKEN` there. Reuse the `CLOUDFLARE_ACCOUNT_ID` GitHub Actions variable.
 
-Commit `.github/fork-preview.json` on the default branch. With `cli: cf`, use `main` for the artifact entry point and `env` for staging bindings. The workflow generates Preview Build Output from this file and deploys it with `cf previews deploy --prebuilt`. An `auth` configuration can start with the following fields and add its staging bindings.
+Use test resources and credentials in the trusted config and Cloudflare’s Previews Base. The deployed code can read its runtime bindings and secrets. Set per-preview secrets as a JSON object in the optional `FORK_PREVIEW_WORKER_SECRETS_JSON` environment secret. Existing previews can retain previously deployed secrets.
+
+Commit `.github/fork-preview.json` on the default branch with the existing Worker’s `name`. With `cli: cf`, use `main` for the artifact entry point and `env` for staging bindings. The workflow generates Preview Build Output from this file and deploys it with `cf previews deploy --prebuilt`. An `auth` configuration can start with the following fields and add its staging bindings.
 
 ```json
 {
-  "name": "auth-forks",
+  "name": "auth",
   "main": "worker/index.js",
   "compatibilityDate": "2026-11-26",
   "assets": {},
@@ -96,12 +96,12 @@ jobs:
       build-workflow: ci-cd.yml
       cli: cf
     secrets:
-      FORK_PREVIEW_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.FORK_PREVIEW_CLOUDFLARE_ACCOUNT_ID }}
-      FORK_PREVIEW_CLOUDFLARE_API_TOKEN: ${{ secrets.FORK_PREVIEW_CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       FORK_PREVIEW_WORKER_SECRETS_JSON: ${{ secrets.FORK_PREVIEW_WORKER_SECRETS_JSON }}
 ```
 
-For scheduled cleanup, call `cloudflare-fork-preview-cleanup.yml` with `worker-name: <repository>-forks` and `environment: fork-preview-cleanup`. Store the staging credentials as `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` in that environment and pass both by name. The cleanup environment can run without a deployment review and should target the same staging Worker.
+For scheduled cleanup, call `cloudflare-fork-preview-cleanup.yml` with the same `worker-name` and account. Use an environment with Cloudflare credentials and no required reviewers so cleanup runs on its schedule.
 
 ## Dependency pinning and updates
 
