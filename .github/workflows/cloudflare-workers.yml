@@ -510,12 +510,7 @@ jobs:
               worker: process.env.WORKER_NAME,
               updatedAt: new Date().toISOString(),
             };
-            for (const value of success ? [links.preview, links.build] : []) {
-              const url = new URL(value);
-              if (url.protocol !== 'https:' || url.username || url.password) {
-                throw new Error('Invalid preview URL');
-              }
-            }
+            if (success && (!links.preview || !links.build)) throw new Error('Preview URLs are missing');
             fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'preview-links.json'), JSON.stringify(links));
 
       - name: Upload Preview Metadata
@@ -673,17 +668,16 @@ jobs:
             const attemptKey = `<!-- cloudflare-preview-run:${process.env.PREVIEW_RUN_ID}:${attempt} -->`;
             const logsUrl = links.attempt === undefined ? runUrl : `${runUrl}/attempts/${attempt}`;
             const status = result => ({success: 'Success ✅', failure: 'Failed ❌', skipped: 'Not run ⏭️', cancelled: 'Cancelled ⏹️'})[result];
-            const rowFor = (sha, build, run, updated = '—', results = {}, key = '') => {
+            const rowFor = (sha, buildUrl, logsUrl, updated = '—', results = {}, key = '') => {
               const buildStatus = results.build ?? 'success';
               const checksStatus = results.checks ?? 'success';
               const deploymentStatus = results.deployment ?? 'success';
               const state = `**Build:** ${status(buildStatus)}` +
                 (checksStatus === 'success' ? '' : `<br>**Checks:** ${status(checksStatus)}`) +
                 `<br>**Deployment:** ${status(deploymentStatus)}`;
-              const url = build ? safeUrl(build) : null;
-              return `| ${state} | ${url ? `[${url}](${url})` : '—'} | [\`${sha.slice(0, 7)}\`](${repoUrl}/commit/${sha}) | ${updated} | [View logs ↗](${safeUrl(run)}) ${key} |`;
+              return `| ${state} | ${buildUrl ? `[${buildUrl}](${buildUrl})` : '—'} | [\`${sha.slice(0, 7)}\`](${repoUrl}/commit/${sha}) | ${updated} | [View logs ↗](${logsUrl}) ${key} |`;
             };
-            const latestRow = rowFor(links.sha, buildUrl, logsUrl, updatedAt,
+            const latestRow = rowFor(links.sha, buildUrl, safeUrl(logsUrl), updatedAt,
               {build: buildResult, checks: checksResult, deployment: deploymentResult}, attemptKey);
             const omittedNotice = 'Older deployments omitted to fit the comment size limit.';
             for (const issue_number of JSON.parse(process.env.PREVIEW_PRS)) {
@@ -699,7 +693,7 @@ jobs:
               const legacyBuild = previous.match(/^- \[This build\]\((https:\/\/[^)\s]+)\) · commit `([a-f0-9]{7,40})`$/m);
               const legacyRun = previous.match(/^- \[CI run and job summaries\]\((https:\/\/[^)\s]+)\)$/m);
               if (legacyBuild && legacyRun) {
-                rows.push(rowFor(legacyBuild[2], legacyBuild[1], legacyRun[1]));
+                rows.push(rowFor(legacyBuild[2], safeUrl(legacyBuild[1]), safeUrl(legacyRun[1])));
               }
               const index = rows.findIndex(row => row.includes(attemptKey) ||
                 (buildUrl && !row.includes('<!-- cloudflare-preview-run:') &&
@@ -715,7 +709,10 @@ jobs:
               }
               if (!previewHeader && !success) {
                 const legacyPreview = previous.match(/^(?:- )?\[Latest branch preview\]\((https:\/\/[^)\s]+)\)$/m);
-                if (legacyPreview) previewHeader = `### Preview URL: [${safeUrl(legacyPreview[1])}](${safeUrl(legacyPreview[1])})`;
+                if (legacyPreview) {
+                  const url = safeUrl(legacyPreview[1]);
+                  previewHeader = `### Preview URL: [${url}](${url})`;
+                }
               }
               let omitted = previous.includes(omittedNotice);
               const render = () => [
