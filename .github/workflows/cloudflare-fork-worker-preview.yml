@@ -217,11 +217,10 @@ jobs:
             exit 1
           fi
 
-          result_path="$RUNNER_TEMP/fork-worker-result.ndjson"
-          GITHUB_SHA="$APPROVED_HEAD_SHA" WRANGLER_OUTPUT_FILE_PATH="$result_path" \
-            npx --yes --ignore-scripts "cf@$CF_VERSION" previews deploy --prebuilt --preview-name "$PREVIEW_NAME" > /dev/null
-          url=$(jq -ser --arg name "$PREVIEW_NAME" '
-            map(select(.type == "preview" and .preview_name == $name)) | last | .preview_urls[0]
-            | select(type == "string" and test("^https://[A-Za-z0-9.-]+/?$"))' "$result_path")
+          result=$(GITHUB_SHA="$APPROVED_HEAD_SHA" \
+            npx --yes --ignore-scripts "cf@$CF_VERSION" previews deploy --prebuilt --preview-name "$PREVIEW_NAME")
+          url=$(jq -er --arg name "$PREVIEW_NAME" '
+            select(.type == "preview" and .preview_name == $name) | .preview_urls[0]
+            | select(type == "string" and test("^https://[A-Za-z0-9.-]+/?$"))' <<< "$result")
           printf 'url=%s\n' "$url" >> "$GITHUB_OUTPUT"
           printf '[Open the approved fork preview](%s)\n' "$url" >> "$GITHUB_STEP_SUMMARY"

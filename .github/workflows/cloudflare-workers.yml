@@ -442,10 +442,9 @@ jobs:
               .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
             const link = (value, label) => {
               if (!value) return 'Unavailable';
-              const customDomain = value.match(/^([a-z0-9.-]+) \(custom domain(?: - zone (?:name|id): [^)]+)?\)$/i);
               let url;
               try {
-                url = new URL(customDomain ? `https://${customDomain[1]}` : value);
+                url = new URL(value);
               } catch {
                 return escape(value);
               }
