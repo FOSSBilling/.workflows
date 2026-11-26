@@ -11,8 +11,8 @@ on:
       CLOUDFLARE_ACCOUNT_ID:
         required: true
       CLOUDFLARE_API_TOKEN:
-        description: Cloudflare token supplied by the fork-preview environment.
-        required: false
+        description: Cloudflare deploy token passed by the caller.
+        required: true
 
 jobs:
   prepare:

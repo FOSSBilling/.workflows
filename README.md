@@ -5,7 +5,7 @@ Reusable GitHub Actions workflows for the [FOSSBilling](https://fossbilling.org/
 | Workflow | Purpose |
 | --- | --- |
 | [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) | Deploys Workers with `cf`, updates PR preview comments, and removes branch previews. |
-| [`cloudflare-fork-preview.yml`](.github/workflows/cloudflare-fork-preview.yml) | Publishes static fork previews and deploys fork Worker code after approval. |
+| [`cloudflare-fork-preview.yml`](.github/workflows/cloudflare-fork-preview.yml) | Deploys fork previews after GitHub approval. |
 | [`cloudflare-fork-preview-cleanup.yml`](.github/workflows/cloudflare-fork-preview-cleanup.yml) | Removes previews for closed fork PRs on a schedule. |
 
 ## Deploy a Worker
@@ -38,7 +38,7 @@ See the workflow files for their inputs and outputs. Wrangler callers can keep t
 
 Build the exact fork PR head in `pull_request` CI and upload `.cloudflare/output/` as `fork-preview-${{ github.run_attempt }}` with `include-hidden-files: true`. Call `cloudflare-fork-preview.yml` on completed `workflow_run` events with the CI filename as `build-workflow`. Grant the caller `actions: read`, `contents: read`, and `pull-requests: read`.
 
-Set required reviewers and `CLOUDFLARE_API_TOKEN` on the `fork-preview` environment. Every fork preview needs approval. GitHub shows the preview URL on the deployment. The workflow reads deployment settings from the default branch’s Node-loadable `cloudflare.config.ts` and npm lockfile. Configure test bindings and secrets in Cloudflare Previews Base for previews that run Worker code.
+Set required reviewers on the `fork-preview` environment and pass the existing `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the caller. GitHub shows the preview URL on the deployment. The workflow reads deployment settings from the default branch’s Node-loadable `cloudflare.config.ts` and npm lockfile. Configure test bindings and secrets in Cloudflare Previews Base for previews that run Worker code.
 
 Reserve `pr-<number>` names by excluding them from branch builds and setting `reserve-fork-preview-names: true` on branch cleanup. Call `cloudflare-fork-preview-cleanup.yml` on a schedule with `pull-requests: read` and the same `worker-name` and account.
 
