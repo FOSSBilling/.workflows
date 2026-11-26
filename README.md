@@ -36,14 +36,11 @@ See the workflow files for their inputs and outputs. Wrangler callers can keep t
 
 ## Fork previews
 
-Build the exact PR head in `pull_request` CI and upload `fork-preview-${{ github.run_attempt }}`. Call `cloudflare-fork-preview.yml` on completed `workflow_run` events. Set `build-workflow` to the CI workflow filename.
+Build the exact fork PR head in `pull_request` CI and upload `.cloudflare/output/` as `fork-preview-${{ github.run_attempt }}` with `include-hidden-files: true`. Call `cloudflare-fork-preview.yml` on completed `workflow_run` events with the CI filename as `build-workflow`. Grant the caller `actions: read`, `contents: read`, and `pull-requests: read`.
 
-- **Static sites.** Set `preview-type: static` and upload `.cloudflare/output/`. The workflow publishes only the static assets and posts the preview link. Grant the caller `actions: read`, `contents: read`, and `pull-requests: write`.
-- **Workers with server code.** Set `preview-type: worker` and grant `actions: read`, `contents: read`, and `pull-requests: read`. Set required reviewers and the Cloudflare API token on the `fork-preview` environment. Configure test bindings and secrets in Previews Base.
+Set required reviewers and `CLOUDFLARE_API_TOKEN` on the `fork-preview` environment. Every fork preview needs approval. GitHub shows the preview URL on the deployment. The workflow reads deployment settings from the default branch’s Node-loadable `cloudflare.config.ts` and npm lockfile. Configure test bindings and secrets in Cloudflare Previews Base for previews that run Worker code.
 
-  Upload compiled JavaScript modules under `worker/` and any static files under `assets/`. Set `worker-entrypoint` when the entry module differs from `index.js`. The workflow uses the default branch’s Node-loadable `cloudflare.config.ts` and npm lockfile for Worker settings.
-
-Reserve `pr-<number>` names by excluding them from branch builds and setting `reserve-fork-preview-names: true` on branch cleanup. Call `cloudflare-fork-preview-cleanup.yml` on a schedule with `pull-requests: read` and the same `worker-name` and account. For static fork previews, put cleanup and publishing in the same concurrency group.
+Reserve `pr-<number>` names by excluding them from branch builds and setting `reserve-fork-preview-names: true` on branch cleanup. Call `cloudflare-fork-preview-cleanup.yml` on a schedule with `pull-requests: read` and the same `worker-name` and account.
 
 ## Contributing
 

@@ -3,30 +3,23 @@ name: Cloudflare Fork Preview
 on:
   workflow_call:
     inputs:
-      preview-type:
-        description: Static assets (static) or Worker code with deployment approval (worker).
-        required: true
-        type: string
       build-workflow:
         description: Filename of the workflow that uploads the fork preview artifact.
         required: true
-        type: string
-      worker-entrypoint:
-        description: Compiled entry module within the artifact's worker directory.
-        default: index.js
         type: string
     secrets:
       CLOUDFLARE_ACCOUNT_ID:
         required: true
       CLOUDFLARE_API_TOKEN:
-        required: true
+        description: Cloudflare token supplied by the fork-preview environment.
+        required: false
 
 jobs:
   prepare:
     if: >-
       github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion == 'success' &&
-      (inputs.preview-type != 'worker' || github.run_attempt == 1)
+      github.run_attempt == 1
     runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
@@ -35,20 +28,14 @@ jobs:
     outputs:
       pr-number: ${{ steps.target.outputs.pr-number }}
       artifact-id: ${{ steps.target.outputs.artifact-id }}
-      artifact-name: ${{ steps.target.outputs.artifact-name }}
-      attempt: ${{ github.run_attempt }}
     steps:
       - name: Find Preview Candidate
         id: target
         uses: actions/github-script@v9.0.0
         env:
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
-          PREVIEW_TYPE: ${{ inputs.preview-type }}
         with:
           script: |
-            const type = process.env.PREVIEW_TYPE;
-            if (type !== 'static' && type !== 'worker') throw new Error('preview-type must be static or worker');
-
             const { repository, workflow_run: run } = context.payload;
             const fork = run.head_repository;
             if (run.path !== `.github/workflows/${process.env.BUILD_WORKFLOW}` ||
@@ -68,41 +55,20 @@ jobs:
             });
             const name = `fork-preview-${run.run_attempt}`;
             const builds = artifacts.filter(artifact => !artifact.expired && artifact.name === name &&
-              (type === 'static' || artifact.size_in_bytes <= 256 * 1024 ** 2));
+              artifact.size_in_bytes <= 256 * 1024 ** 2);
             if (builds.length !== 1) return;
             const [artifact] = builds;
 
             const [pr] = matches;
             core.setOutput('pr-number', pr.number);
             core.setOutput('artifact-id', artifact.id);
-            core.setOutput('artifact-name', artifact.name);
             await core.summary.addLink(`Review PR #${pr.number}`, pr.html_url).addBreak()
               .addLink(`Successful CI for ${run.head_sha}`, run.html_url).write();
-
-  static-preview:
-    needs: prepare
-    if: >-
-      inputs.preview-type == 'static' && needs.prepare.outputs.artifact-name != '' &&
-      needs.prepare.outputs.attempt == github.run_attempt
-    uses: ./.github/workflows/cloudflare-workers.yml
-    with:
-      mode: preview
-      environment: preview
-      preview-name: pr-${{ needs.prepare.outputs.pr-number }}
-      pr-comment: true
-      fork-pr-number: ${{ needs.prepare.outputs.pr-number }}
-      worker-name: ${{ github.event.repository.name }}
-      node-version: '26'
-      artifact-name: ${{ needs.prepare.outputs.artifact-name }}
-      artifact-run-id: ${{ format('{0}', github.event.workflow_run.id) }}
-    secrets:
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
   deploy:
     name: 'Preview PR #${{ needs.prepare.outputs.pr-number }} at ${{ github.event.workflow_run.head_sha }}'
     needs: prepare
-    if: inputs.preview-type == 'worker' && needs.prepare.outputs.artifact-id != '' && github.run_attempt == 1
+    if: needs.prepare.outputs.artifact-id != '' && github.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -110,7 +76,7 @@ jobs:
       contents: read
       pull-requests: read
     concurrency:
-      group: fork-worker-preview-${{ needs.prepare.outputs.pr-number }}
+      group: fork-preview-${{ needs.prepare.outputs.pr-number }}
       cancel-in-progress: true
     environment:
       name: fork-preview
@@ -150,18 +116,16 @@ jobs:
           writeFileSync(`${process.env.RUNNER_TEMP}/fork-preview-worker.json`, JSON.stringify(settings));
           JS
 
-      - name: Download Approved Worker Archive
+      - name: Download Approved Build Archive
         uses: actions/download-artifact@v8.0.2
         with:
           artifact-ids: ${{ needs.prepare.outputs.artifact-id }}
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/fork-worker-download
+          path: ${{ runner.temp }}/fork-preview-download
           skip-decompress: true
 
-      - name: Prepare Worker Package
-        env:
-          WORKER_ENTRYPOINT: ${{ inputs.worker-entrypoint }}
+      - name: Prepare Preview Package
         shell: bash
         run: |
           python3 - <<'PY'
@@ -174,62 +138,66 @@ jobs:
           from pathlib import Path
 
           temp = Path(os.environ['RUNNER_TEMP'])
-          package = temp / 'fork-worker-package'
-          package.mkdir()
-          archives = list((temp / 'fork-worker-download').iterdir())
+          output = temp / 'fork-preview-package/.cloudflare/output'
+          worker = output / 'v1/workers/default'
+          worker.mkdir(parents=True)
+          archives = list((temp / 'fork-preview-download').iterdir())
           if len(archives) != 1 or not archives[0].is_file():
-              raise SystemExit('Expected one Worker artifact archive')
+              raise SystemExit('Expected one build artifact archive')
 
           with zipfile.ZipFile(archives[0]) as archive:
               seen = set()
               entries = archive.infolist()
               if len(entries) > 20_000 or sum(entry.file_size for entry in entries) > 256 * 1024**2:
-                  raise SystemExit('Worker archive exceeds the file count or size limit')
+                  raise SystemExit('Build archive exceeds the file count or size limit')
               for entry in entries:
                   parts = entry.filename.removesuffix('/').split('/')
                   kind = stat.S_IFMT(entry.external_attr >> 16)
                   expected = stat.S_IFDIR if entry.is_dir() else stat.S_IFREG
-                  if (parts[0] not in ('worker', 'assets') or
-                      any(part in ('', '.', '..') or '\\' in part or any(ord(c) < 32 or ord(c) == 127 for c in part) for part in parts) or
+                  if (any(part in ('', '.', '..') or '\\' in part or any(ord(c) < 32 or ord(c) == 127 for c in part) for part in parts) or
                       kind not in (0, expected) or tuple(parts) in seen):
-                      raise SystemExit('Worker archive contains an invalid or duplicate path')
+                      raise SystemExit('Build archive contains an invalid or duplicate path')
                   seen.add(tuple(parts))
                   if entry.is_dir():
                       continue
-                  if len(parts) < 2 or (parts[0] == 'worker' and not parts[-1].endswith(('.js', '.mjs'))):
-                      raise SystemExit('Worker archive must contain only JavaScript modules and static assets')
-                  target = package.joinpath(*parts)
+                  if parts[:3] != ['v1', 'workers', 'default']:
+                      continue
+                  relative = parts[3:]
+                  if relative != ['worker.config.json'] and not (len(relative) > 1 and relative[0] in ('bundle', 'assets')):
+                      continue
+                  target = worker.joinpath(*relative)
                   target.parent.mkdir(parents=True, exist_ok=True)
-                  with archive.open(entry) as source, target.open('xb') as output:
-                      shutil.copyfileobj(source, output)
+                  with archive.open(entry) as source, target.open('xb') as destination:
+                      shutil.copyfileobj(source, destination)
 
           config = json.loads((temp / 'fork-preview-worker.json').read_text())
           if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,62}', config.get('name', '')):
               raise SystemExit('Set the existing Worker name in cloudflare.config.ts')
-          bundle = package / 'worker'
-          main = os.environ['WORKER_ENTRYPOINT']
-          if not re.fullmatch(r'[\w.-]+\.(?:m?js)', main) or not (bundle / main).is_file():
-              raise SystemExit('The Worker artifact is missing the configured module entry point')
-          assets = package / 'assets'
+          worker_config = worker / 'worker.config.json'
+          manifest = json.loads(worker_config.read_text()).get('manifest')
+          bundle = worker / 'bundle'
+          if bundle.is_dir():
+              files = {entry.relative_to(bundle).as_posix() for entry in bundle.rglob('*') if entry.is_file()}
+              if (not isinstance(manifest, dict) or not isinstance(manifest.get('mainModule'), str) or
+                  manifest['mainModule'] not in files or not isinstance(manifest.get('modules'), dict) or
+                  not files.issuperset(manifest['modules'])):
+                  raise SystemExit('The Worker manifest must reference files in the uploaded bundle')
+              config['manifest'] = manifest
+          elif manifest is not None:
+              raise SystemExit('Build contains a Worker manifest without a bundle')
+          assets = worker / 'assets'
+          if not bundle.is_dir() and not assets.is_dir():
+              raise SystemExit('Build must contain Worker code or static assets')
           if ('assets' in config or 'env' in config) and not assets.is_dir():
-              raise SystemExit('The Worker artifact is missing the configured assets')
+              raise SystemExit('Build is missing the configured assets')
 
-          config['manifest'] = {
-              'type': 'complete',
-              'mainModule': main,
-              'modules': {entry.relative_to(bundle).as_posix(): {'type': 'esm'}
-                          for entry in bundle.rglob('*') if entry.is_file()},
-          }
-          output = package / '.cloudflare/output/v1'
-          worker = output / 'workers/default'
-          worker.mkdir(parents=True)
-          root_config = {'producer': {'name': 'fossbilling-fork-preview', 'version': '1'},
-                         'buildContext': {'isPreview': True}}
-          (output / 'config.json').write_text(json.dumps(root_config))
-          (worker / 'worker.config.json').write_text(json.dumps(config))
-          bundle.rename(worker / 'bundle')
           if assets.is_dir():
-              assets.rename(worker / 'assets')
+              headers = assets / '_headers'
+              existing = headers.read_bytes() if headers.exists() else b''
+              headers.write_bytes(b'/*\n  X-Robots-Tag: noindex\n\n' + existing)
+          # Rebuild deployment configuration from the default branch settings.
+          (output / 'v1/config.json').write_text(json.dumps({'buildContext': {'isPreview': True}}))
+          worker_config.write_text(json.dumps(config))
           PY
 
       - name: Verify Approval and PR Head
@@ -255,9 +223,9 @@ jobs:
               review.environments.some(environment => environment.name === 'fork-preview'));
             if (!reviewed) throw new Error('Approve this deployment through GitHub as a configured reviewer other than the PR author.');
 
-      - name: Deploy Fork Worker Preview
+      - name: Deploy Fork Preview
         id: deploy
-        working-directory: ${{ runner.temp }}/fork-worker-package
+        working-directory: ${{ runner.temp }}/fork-preview-package
         env:
           # renovate: datasource=npm depName=cf
           CF_VERSION: '1.0.0-rc.4'
