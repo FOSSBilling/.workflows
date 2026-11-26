@@ -7,7 +7,7 @@ workflows:
         - 'actions/checkout@v7.0.1'
     '.github/workflows/cloudflare-fork-preview-cleanup.yml':
         - 'actions/github-script@v9.0.0'
-    '.github/workflows/cloudflare-fork-worker-preview.yml':
+    '.github/workflows/cloudflare-fork-preview.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/download-artifact@v8.0.2'
         - 'actions/github-script@v9.0.0'

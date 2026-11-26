@@ -1,10 +1,14 @@
-name: Cloudflare Fork Worker Preview
+name: Cloudflare Fork Preview
 
 on:
   workflow_call:
     inputs:
+      preview-type:
+        description: Static assets (static) or Worker code with deployment approval (worker).
+        required: true
+        type: string
       build-workflow:
-        description: Filename of the workflow that publishes the fork Worker artifact.
+        description: Filename of the workflow that uploads the fork preview artifact.
         required: true
         type: string
       worker-entrypoint:
@@ -21,7 +25,8 @@ jobs:
   prepare:
     if: >-
       github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success' && github.run_attempt == 1
+      github.event.workflow_run.conclusion == 'success' &&
+      (inputs.preview-type != 'worker' || github.run_attempt == 1)
     runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
@@ -30,14 +35,20 @@ jobs:
     outputs:
       pr-number: ${{ steps.target.outputs.pr-number }}
       artifact-id: ${{ steps.target.outputs.artifact-id }}
+      artifact-name: ${{ steps.target.outputs.artifact-name }}
+      attempt: ${{ github.run_attempt }}
     steps:
       - name: Find Preview Candidate
         id: target
         uses: actions/github-script@v9.0.0
         env:
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
+          PREVIEW_TYPE: ${{ inputs.preview-type }}
         with:
           script: |
+            const type = process.env.PREVIEW_TYPE;
+            if (type !== 'static' && type !== 'worker') throw new Error('preview-type must be static or worker');
+
             const { repository, workflow_run: run } = context.payload;
             const fork = run.head_repository;
             if (run.path !== `.github/workflows/${process.env.BUILD_WORKFLOW}` ||
@@ -55,21 +66,43 @@ jobs:
             const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
               ...context.repo, run_id: run.id, per_page: 100,
             });
-            const builds = artifacts.filter(artifact => !artifact.expired &&
-              artifact.size_in_bytes <= 256 * 1024 ** 2 &&
-              artifact.name === `fork-worker-${run.run_attempt}`);
+            const name = `fork-preview-${run.run_attempt}`;
+            const builds = artifacts.filter(artifact => !artifact.expired && artifact.name === name &&
+              (type === 'static' || artifact.size_in_bytes <= 256 * 1024 ** 2));
             if (builds.length !== 1) return;
+            const [artifact] = builds;
 
             const [pr] = matches;
             core.setOutput('pr-number', pr.number);
-            core.setOutput('artifact-id', builds[0].id);
+            core.setOutput('artifact-id', artifact.id);
+            core.setOutput('artifact-name', artifact.name);
             await core.summary.addLink(`Review PR #${pr.number}`, pr.html_url).addBreak()
               .addLink(`Successful CI for ${run.head_sha}`, run.html_url).write();
+
+  static-preview:
+    needs: prepare
+    if: >-
+      inputs.preview-type == 'static' && needs.prepare.outputs.artifact-name != '' &&
+      needs.prepare.outputs.attempt == github.run_attempt
+    uses: ./.github/workflows/cloudflare-workers.yml
+    with:
+      mode: preview
+      environment: preview
+      preview-name: pr-${{ needs.prepare.outputs.pr-number }}
+      pr-comment: true
+      fork-pr-number: ${{ needs.prepare.outputs.pr-number }}
+      worker-name: ${{ github.event.repository.name }}
+      node-version: '26'
+      artifact-name: ${{ needs.prepare.outputs.artifact-name }}
+      artifact-run-id: ${{ format('{0}', github.event.workflow_run.id) }}
+    secrets:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
   deploy:
     name: 'Preview PR #${{ needs.prepare.outputs.pr-number }} at ${{ github.event.workflow_run.head_sha }}'
     needs: prepare
-    if: needs.prepare.outputs.artifact-id != '' && github.run_attempt == 1
+    if: inputs.preview-type == 'worker' && needs.prepare.outputs.artifact-id != '' && github.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

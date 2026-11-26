@@ -5,7 +5,7 @@ Reusable GitHub Actions workflows for the [FOSSBilling](https://fossbilling.org/
 | Workflow | Purpose |
 | --- | --- |
 | [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) | Deploys Workers with `cf`, updates PR preview comments, and removes branch previews. |
-| [`cloudflare-fork-worker-preview.yml`](.github/workflows/cloudflare-fork-worker-preview.yml) | Deploys fork Worker code after GitHub deployment approval. |
+| [`cloudflare-fork-preview.yml`](.github/workflows/cloudflare-fork-preview.yml) | Publishes static fork previews and deploys fork Worker code after approval. |
 | [`cloudflare-fork-preview-cleanup.yml`](.github/workflows/cloudflare-fork-preview-cleanup.yml) | Removes previews for closed fork PRs on a schedule. |
 
 ## Deploy a Worker
@@ -36,13 +36,12 @@ See the workflow files for their inputs and outputs. Wrangler callers can keep t
 
 ## Fork previews
 
-**Static sites.** Use `cloudflare-workers.yml` from a trusted `workflow_run` caller. Verify the successful build matches the current fork PR head, then pass its `artifact-name` and `artifact-run-id`. Set `mode: preview`, `prebuilt: false`, and `preview-name`.
+Build the exact PR head in `pull_request` CI and upload `fork-preview-${{ github.run_attempt }}`. Call `cloudflare-fork-preview.yml` on completed `workflow_run` events. Set `build-workflow` to the CI workflow filename.
 
-**Workers with server code.** Call `cloudflare-fork-worker-preview.yml` on `workflow_run` and set `build-workflow` to the CI workflow filename.
+- **Static sites.** Set `preview-type: static` and upload `.cloudflare/output/`. The workflow publishes only the static assets and posts the preview link. Grant the caller `actions: read`, `contents: read`, and `pull-requests: write`.
+- **Workers with server code.** Set `preview-type: worker` and grant `actions: read`, `contents: read`, and `pull-requests: read`. Set required reviewers and the Cloudflare API token on the `fork-preview` environment. Configure test bindings and secrets in Previews Base.
 
-- Set required reviewers on the `fork-preview` environment and store the Cloudflare API token there. Configure test bindings and secrets in Cloudflare’s Previews Base.
-- Keep a Node-loadable `cloudflare.config.ts` and npm lockfile on the default branch. The workflow takes the Worker name, compatibility settings, and asset settings from this config.
-- Build the exact PR head in `pull_request` CI. Upload `fork-worker-${{ github.run_attempt }}` with compiled JavaScript modules under `worker/` and any static files under `assets/`. Set `worker-entrypoint` when the entry module differs from `index.js`.
+  Upload compiled JavaScript modules under `worker/` and any static files under `assets/`. Set `worker-entrypoint` when the entry module differs from `index.js`. The workflow uses the default branch’s Node-loadable `cloudflare.config.ts` and npm lockfile for Worker settings.
 
 Reserve `pr-<number>` names by excluding them from branch builds and setting `reserve-fork-preview-names: true` on branch cleanup. Call `cloudflare-fork-preview-cleanup.yml` on a schedule with `pull-requests: read` and the same `worker-name` and account. For static fork previews, put cleanup and publishing in the same concurrency group.
 
