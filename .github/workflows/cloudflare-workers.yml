@@ -177,8 +177,8 @@ jobs:
                 if (!process.env[name]?.trim()) throw new Error(`${name} is required for deploy`);
               }
             } else if (operation === 'sync-pr-comment') {
-              if (!['workflow_run', 'pull_request'].includes(context.eventName)) {
-                throw new Error('sync-pr-comment requires a workflow_run or pull_request event');
+              if (context.eventName !== 'pull_request') {
+                throw new Error('sync-pr-comment requires a pull_request event');
               }
               if (!process.env.BUILD_WORKFLOW.trim()) throw new Error('build-workflow is required for sync-pr-comment');
             } else {
@@ -555,7 +555,6 @@ jobs:
             const repo = context.repo;
             const repository = context.payload.repository;
             const base = process.env.PR_BASE_BRANCH || repository.default_branch;
-            const eventRun = context.payload.workflow_run;
             const pr = context.payload.pull_request;
             const select = (artifactId, runId, sha, numbers) => {
               core.setOutput('artifact-id', String(artifactId));
@@ -577,37 +576,29 @@ jobs:
               const artifactId = process.env.RECORDED_ARTIFACT_ID;
               if (!artifactId) throw new Error('Preview metadata artifact is missing');
               if (process.env.FORK_PR_NUMBER) {
-                select(artifactId, context.runId, eventRun.head_sha, [Number(process.env.FORK_PR_NUMBER)]);
+                select(artifactId, context.runId, context.payload.workflow_run.head_sha, [Number(process.env.FORK_PR_NUMBER)]);
               } else if (context.ref.startsWith('refs/heads/')) {
                 const numbers = await matchingPrNumbers(context.ref.slice('refs/heads/'.length), context.sha);
                 if (numbers.length) select(artifactId, context.runId, context.sha, numbers);
               }
               return;
             }
-            if (context.eventName === 'workflow_run') {
-              if (!eventRun || eventRun.event !== 'push' || eventRun.status !== 'completed' ||
-                  eventRun.head_repository?.full_name !== repository.full_name) return;
-            } else if (!pr || pr.state !== 'open' || pr.base.ref !== base ||
-                       pr.head.repo?.full_name !== repository.full_name) {
+            if (context.eventName !== 'pull_request' || pr?.state !== 'open' || pr.base.ref !== base ||
+                pr.head.repo?.full_name !== repository.full_name) {
               return;
             }
             const { data: workflow } = await github.rest.actions.getWorkflow({
               ...repo, workflow_id: process.env.BUILD_WORKFLOW,
             });
-            let candidates;
-            if (eventRun) {
-              candidates = [eventRun];
-            } else {
-              candidates = await github.paginate(github.rest.actions.listWorkflowRuns, {
-                ...repo, workflow_id: workflow.id, event: 'push',
-                branch: pr.head.ref, head_sha: pr.head.sha, per_page: 100,
-              });
-              candidates.sort((a, b) => b.run_number - a.run_number || b.run_attempt - a.run_attempt);
-            }
+            const candidates = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...repo, workflow_id: workflow.id, event: 'push',
+              branch: pr.head.ref, head_sha: pr.head.sha, per_page: 100,
+            });
+            candidates.sort((a, b) => b.run_number - a.run_number || b.run_attempt - a.run_attempt);
             const runs = candidates.filter(run =>
               run.workflow_id === workflow.id && run.event === 'push' &&
               run.head_repository?.full_name === repository.full_name &&
-              (!pr || (run.head_sha === pr.head.sha && run.head_branch === pr.head.ref))
+              run.head_sha === pr.head.sha && run.head_branch === pr.head.ref
             );
             for (const run of runs) {
               const numbers = await matchingPrNumbers(run.head_branch, run.head_sha);
