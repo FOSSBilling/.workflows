@@ -67,9 +67,13 @@ on:
         description: Optional Wrangler version; omit to use the wrangler-action default value; only used when cli is wrangler.
         type: string
       pr-comment:
-        description: "Maintain comments on matching same-repository PRs for preview build and deployment attempts (requires actions: read and pull-requests: write in the caller)."
+        description: "Maintain comments on matching PRs for preview build and deployment attempts (requires actions: read and pull-requests: write in the caller)."
         default: false
         type: boolean
+      fork-pr-number:
+        description: Fork PR receiving the named static preview comment for the triggering CI run.
+        type: string
+        default: ''
       pr-base-branch:
         description: PR target branch; defaults to the calling repository's default branch.
         default: ''
@@ -126,6 +130,7 @@ jobs:
           CHECKS_RESULT: ${{ inputs.checks-result }}
           TARGET_ENVIRONMENT: ${{ inputs.environment }}
           ARTIFACT_NAME: ${{ inputs.artifact-name }}
+          FORK_PR_NUMBER: ${{ inputs.fork-pr-number }}
           ARTIFACT_RUN_ID: ${{ inputs.artifact-run-id }}
           ARTIFACT_PATH: ${{ inputs.artifact-path }}
           CONFIG_PATH: ${{ inputs.config-path }}
@@ -146,6 +151,14 @@ jobs:
             }
             if (process.env.WORKER_NAME && !/^[a-zA-Z0-9_-]+$/.test(process.env.WORKER_NAME)) {
               throw new Error('worker-name must contain only letters, numbers, underscores, or hyphens');
+            }
+            if (process.env.FORK_PR_NUMBER) {
+              const run = context.payload.workflow_run;
+              if (!/^[1-9]\d*$/.test(process.env.FORK_PR_NUMBER) || run?.event !== 'pull_request' ||
+                  run.conclusion !== 'success' || !run.head_repository || run.head_repository.id === context.payload.repository.id ||
+                  String(run.id) !== process.env.ARTIFACT_RUN_ID) {
+                throw new Error('fork-pr-number requires the successful triggering fork PR build as artifact-run-id');
+              }
             }
             if (process.env.ARTIFACT_RUN_ID && (!/^[1-9]\d*$/.test(process.env.ARTIFACT_RUN_ID) ||
                 !process.env.PREVIEW_NAME || operation !== 'deploy')) {
@@ -495,7 +508,9 @@ jobs:
     if: >-
       !cancelled() && needs.validate.result == 'success' &&
       inputs.operation == 'deploy' && inputs.mode == 'preview' &&
-      github.event_name == 'push' && github.ref_type == 'branch'
+      ((github.event_name == 'push' && github.ref_type == 'branch') || (inputs.fork-pr-number != '' && inputs.pr-comment))
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions: {}
@@ -503,6 +518,9 @@ jobs:
       - name: Write Preview Metadata
         uses: actions/github-script@v9.0.0
         env:
+          SOURCE_SHA: ${{ inputs.fork-pr-number && github.event.workflow_run.head_sha || github.sha }}
+          EXPECTED_NAME: ${{ inputs.preview-name }}
+          DEPLOYED_NAME: ${{ needs.deploy.outputs.preview-name }}
           PREVIEW_URL: ${{ needs.deploy.outputs.preview-url }}
           PREVIEW_BUILD_URL: ${{ needs.deploy.outputs.preview-build-url }}
           BUILD_RESULT: ${{ inputs.build-result }}
@@ -516,8 +534,11 @@ jobs:
             const fs = require('node:fs');
             const path = require('node:path');
             const success = process.env.DEPLOY_RESULT === 'success';
+            if (success && process.env.EXPECTED_NAME && process.env.DEPLOYED_NAME !== process.env.EXPECTED_NAME) {
+              throw new Error('Unexpected deployed preview name');
+            }
             const links = {
-              sha: context.sha,
+              sha: process.env.SOURCE_SHA,
               preview: success ? process.env.PREVIEW_URL : null,
               build: success ? process.env.PREVIEW_BUILD_URL : null,
               buildResult: process.env.BUILD_RESULT,
@@ -537,6 +558,7 @@ jobs:
             fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'preview-links.json'), JSON.stringify(links));
 
       - name: Upload Preview Metadata
+        id: upload
         uses: actions/upload-artifact@v7.0.2
         with:
           name: ${{ inputs.preview-artifact-name }}-attempt-${{ github.run_attempt }}
@@ -553,7 +575,7 @@ jobs:
     runs-on: ubuntu-slim
     timeout-minutes: 10
     concurrency:
-      group: cloudflare-preview-comment-${{ github.repository }}-${{ inputs.worker-name }}-${{ github.event.pull_request.head.ref || github.event.workflow_run.head_branch || github.ref_name }}
+      group: cloudflare-preview-comment-${{ github.repository }}-${{ inputs.worker-name }}-${{ inputs.fork-pr-number || github.event.pull_request.head.ref || github.event.workflow_run.head_branch || github.ref_name }}
       cancel-in-progress: false
     steps:
       # Use only API calls and preview metadata. Never check out or execute PR code.
@@ -561,6 +583,8 @@ jobs:
         id: build
         uses: actions/github-script@v9.0.0
         env:
+          FORK_PR_NUMBER: ${{ inputs.fork-pr-number }}
+          RECORDED_ARTIFACT_ID: ${{ needs.preview.outputs.artifact-id }}
           OPERATION: ${{ inputs.operation }}
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
           PREVIEW_ARTIFACT_NAME: ${{ inputs.preview-artifact-name }}
@@ -573,6 +597,14 @@ jobs:
             const direct = process.env.OPERATION === 'deploy';
             const eventRun = context.payload.workflow_run;
             const pr = context.payload.pull_request;
+            if (process.env.FORK_PR_NUMBER) {
+              // Metadata comes from this publisher run. The commit comes from the fork CI run.
+              core.setOutput('artifact-id', process.env.RECORDED_ARTIFACT_ID);
+              core.setOutput('run-id', String(context.runId));
+              core.setOutput('sha', eventRun.head_sha);
+              core.setOutput('prs', JSON.stringify([Number(process.env.FORK_PR_NUMBER)]));
+              return;
+            }
             if (direct) {
               if (!context.ref.startsWith('refs/heads/')) return;
             } else if (context.eventName === 'workflow_run') {
@@ -652,6 +684,7 @@ jobs:
         if: steps.build.outputs.run-id
         uses: actions/github-script@v9.0.0
         env:
+          FORK_PR_NUMBER: ${{ inputs.fork-pr-number }}
           PREVIEW_RUN_ID: ${{ steps.build.outputs.run-id }}
           PREVIEW_SHA: ${{ steps.build.outputs.sha }}
           PREVIEW_ATTEMPT: ${{ steps.build.outputs.attempt }}
@@ -771,8 +804,10 @@ jobs:
               // Recheck after reading comments, immediately before writing.
               const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: issue_number });
               const base = process.env.PR_BASE_BRANCH || context.payload.repository.default_branch;
+              const source = process.env.FORK_PR_NUMBER ? context.payload.workflow_run.head_repository : context.payload.repository;
               if (pr.state !== 'open' || pr.base.ref !== base || pr.head.sha !== links.sha ||
-                  pr.head.repo?.full_name !== context.payload.repository.full_name) continue;
+                  pr.head.repo?.id !== source.id) continue;
+              if (process.env.FORK_PR_NUMBER && pr.head.ref !== context.payload.workflow_run.head_branch) continue;
               if (existing) {
                 await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
               } else {
