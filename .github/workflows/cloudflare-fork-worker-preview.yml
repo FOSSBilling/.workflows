@@ -251,9 +251,10 @@ jobs:
           PREVIEW_SECRET_VALUES: ${{ secrets.FORK_PREVIEW_WORKER_SECRETS_JSON }}
         shell: bash
         run: |
-          if [[ ! "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ || -z "$CLOUDFLARE_API_TOKEN" ||
+          if [[ ! "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ || ! "$PRODUCTION_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ||
+                -z "$CLOUDFLARE_API_TOKEN" ||
                 "$CLOUDFLARE_ACCOUNT_ID" == "$PRODUCTION_ACCOUNT_ID" ]]; then
-            echo 'Configure the fork-preview environment with credentials for a separate Cloudflare account' >&2
+            echo 'Set the production CLOUDFLARE_ACCOUNT_ID variable and separate Cloudflare credentials in the fork-preview environment' >&2
             exit 1
           fi
 
@@ -269,16 +270,9 @@ jobs:
 
           result_path="$RUNNER_TEMP/fork-worker-result.ndjson"
           if [[ "$PREVIEW_CLI" == cf ]]; then
-            cf=(npx --yes --ignore-scripts "cf@$CF_VERSION")
-            worker=$(jq -er '.name' .cloudflare/output/v1/workers/default/worker.config.json)
-            # cf uses the Worker's Previews Base when it creates a preview.
-            if ! "${cf[@]}" workers get "$worker" | jq -e --arg name "$worker" '
-              .name == $name and (.previews_base_config.env == null or .previews_base_config.env == {})' > /dev/null; then
-              echo 'The staging Worker must exist and its Previews Base must have no runtime bindings' >&2
-              exit 1
-            fi
             GITHUB_SHA="$APPROVED_HEAD_SHA" WRANGLER_OUTPUT_FILE_PATH="$result_path" \
-              "${cf[@]}" previews deploy --prebuilt --preview-name "$PREVIEW_NAME" "${secret_args[@]}" > /dev/null
+              npx --yes --ignore-scripts "cf@$CF_VERSION" previews deploy --prebuilt \
+              --preview-name "$PREVIEW_NAME" "${secret_args[@]}" > /dev/null
           else
             GITHUB_SHA="$APPROVED_HEAD_SHA" WRANGLER_OUTPUT_FILE_PATH="$result_path" \
               npx --yes --ignore-scripts "wrangler@$WRANGLER_VERSION" preview --config wrangler.json \
