@@ -562,47 +562,38 @@ jobs:
               core.setOutput('sha', sha);
               core.setOutput('prs', JSON.stringify(numbers));
             };
-            const matchingPrNumbers = async (branch, sha) => {
-              const prs = await github.paginate(github.rest.pulls.list, {
-                ...repo, state: 'open', base,
-                head: `${repo.owner}:${branch}`, per_page: 100,
-              });
-              return prs.filter(pr =>
-                pr.state === 'open' && pr.base.ref === base &&
-                pr.head.repo?.full_name === repository.full_name && pr.head.ref === branch && pr.head.sha === sha
-              ).map(pr => pr.number);
-            };
             if (process.env.OPERATION === 'deploy') {
               const artifactId = process.env.RECORDED_ARTIFACT_ID;
               if (!artifactId) throw new Error('Preview metadata artifact is missing');
               if (process.env.FORK_PR_NUMBER) {
                 select(artifactId, context.runId, context.payload.workflow_run.head_sha, [Number(process.env.FORK_PR_NUMBER)]);
-              } else if (context.ref.startsWith('refs/heads/')) {
-                const numbers = await matchingPrNumbers(context.ref.slice('refs/heads/'.length), context.sha);
-                if (numbers.length) select(artifactId, context.runId, context.sha, numbers);
+                return;
               }
+              if (!context.ref.startsWith('refs/heads/')) return;
+              const branch = context.ref.slice('refs/heads/'.length);
+              const prs = await github.paginate(github.rest.pulls.list, {
+                ...repo, state: 'open', base, head: `${repo.owner}:${branch}`, per_page: 100,
+              });
+              const numbers = prs.filter(candidate =>
+                candidate.state === 'open' && candidate.base.ref === base &&
+                candidate.head.repo?.full_name === repository.full_name &&
+                candidate.head.ref === branch && candidate.head.sha === context.sha
+              ).map(candidate => candidate.number);
+              if (numbers.length) select(artifactId, context.runId, context.sha, numbers);
               return;
             }
             if (context.eventName !== 'pull_request' || pr?.state !== 'open' || pr.base.ref !== base ||
                 pr.head.repo?.full_name !== repository.full_name) {
               return;
             }
-            const { data: workflow } = await github.rest.actions.getWorkflow({
-              ...repo, workflow_id: process.env.BUILD_WORKFLOW,
-            });
-            const candidates = await github.paginate(github.rest.actions.listWorkflowRuns, {
-              ...repo, workflow_id: workflow.id, event: 'push',
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...repo, workflow_id: process.env.BUILD_WORKFLOW, event: 'push',
               branch: pr.head.ref, head_sha: pr.head.sha, per_page: 100,
             });
-            candidates.sort((a, b) => b.run_number - a.run_number || b.run_attempt - a.run_attempt);
-            const runs = candidates.filter(run =>
-              run.workflow_id === workflow.id && run.event === 'push' &&
-              run.head_repository?.full_name === repository.full_name &&
-              run.head_sha === pr.head.sha && run.head_branch === pr.head.ref
-            );
+            runs.sort((a, b) => b.run_number - a.run_number || b.run_attempt - a.run_attempt);
             for (const run of runs) {
-              const numbers = await matchingPrNumbers(run.head_branch, run.head_sha);
-              if (!numbers.length) continue;
+              if (run.event !== 'push' || run.head_repository?.full_name !== repository.full_name ||
+                  run.head_sha !== pr.head.sha || run.head_branch !== pr.head.ref) continue;
               const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
                 ...repo, run_id: run.id, per_page: 100,
               });
@@ -617,7 +608,7 @@ jobs:
               available.sort((a, b) => b.attempt - a.attempt);
               const selected = available[0];
               if (!selected) continue;
-              select(selected.artifact.id, run.id, run.head_sha, numbers);
+              select(selected.artifact.id, run.id, run.head_sha, [pr.number]);
               core.setOutput('attempt', selected.attempt ? String(selected.attempt) : '');
               return;
             }
