@@ -1,0 +1,60 @@
+name: Cloudflare Fork Preview Cleanup
+
+on:
+  workflow_call:
+    inputs:
+      worker-name:
+        description: Worker whose pr-<number> preview names are reserved for fork PRs.
+        required: true
+        type: string
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+      CLOUDFLARE_ACCOUNT_ID:
+        required: true
+
+jobs:
+  cleanup:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    permissions:
+      pull-requests: read
+    environment:
+      name: preview
+      deployment: false
+    steps:
+      - name: Find Closed Fork PRs
+        id: forks
+        uses: actions/github-script@v9.0.0
+        with:
+          script: |
+            const prs = await github.paginate(github.rest.pulls.list, {
+              ...context.repo, state: 'closed', base: context.ref.slice('refs/heads/'.length), per_page: 100,
+            });
+            return prs.filter(pr => pr.head.repo?.id !== pr.base.repo.id).map(pr => pr.number);
+
+      - name: Delete Closed Fork Previews
+        if: steps.forks.outputs.result != '[]'
+        env:
+          # renovate: datasource=npm depName=cf
+          CF_VERSION: '1.0.0-rc.3'
+          CLOSED_FORK_PRS: ${{ steps.forks.outputs.result }}
+          WORKER_NAME: ${{ inputs.worker-name }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          numbers=$(jq -er '.[]' <<< "$CLOSED_FORK_PRS")
+          status=0
+          while IFS= read -r number; do
+            if [[ ! "$number" =~ ^[1-9][0-9]*$ ]]; then
+              echo 'Invalid pull request number' >&2
+              exit 1
+            fi
+            if ! output=$(npx --yes --ignore-scripts "cf@$CF_VERSION" previews delete "pr-$number" --worker "$WORKER_NAME" --force 2>&1) && [[ "$output" != *'[10025] '* ]]; then
+              printf 'Could not delete pr-%s:\n%s\n' "$number" "$output" >&2
+              status=1
+            fi
+          done <<< "$numbers"
+          exit "$status"

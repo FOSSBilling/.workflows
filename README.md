@@ -11,6 +11,7 @@ uses: FOSSBilling/.workflows/.github/workflows/<workflow>.yml@main
 | File | Type | Purpose |
 | --- | --- | --- |
 | [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) | Reusable (`workflow_call`) | Deploys Workers with Wrangler or `cf`, syncs preview comments, and cleans up previews. |
+| [`cloudflare-fork-preview-cleanup.yml`](.github/workflows/cloudflare-fork-preview-cleanup.yml) | Reusable (`workflow_call`) | Removes reserved `pr-<number>` previews for closed fork PRs on a schedule. |
 | [`actionlint.yml`](.github/workflows/actionlint.yml) | CI for this repo | Lints all workflow files with [actionlint](https://github.com/rhysd/actionlint), run via a digest-pinned Docker image on every push and pull request. |
 | [`verify-lockfile.yml`](.github/workflows/verify-lockfile.yml) | CI for this repo | Verifies [`actions.lock`](.github/workflows/actions.lock) with `gh actions-lock --verify` whenever workflow files change. |
 
@@ -40,11 +41,11 @@ Use `sync-pr-comment` on `pull_request` for opened, reopened, and synchronized s
 
 See the `inputs:` and `outputs:` blocks at the top of [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) for the full list, including `pr-comment`, `worker-name`, and `prebuilt`.
 
-Use `delete-preview` on `pull_request_target` with `types: [closed]` for same-repository PRs, or on `delete` for branches that are still absent when cleanup runs. Cleanup uses event metadata and GitHub API calls without checking out PR code. Set `worker-name` and `environment`, pass both Cloudflare secrets as shown above, and give the calling job `contents: read`, `actions: read`, and the same concurrency group as the branch's preview deployment.
+Use `delete-preview` on `pull_request` with `types: [closed]` for same-repository PRs, or on `delete` for branches that are still absent when cleanup runs. Cleanup uses event metadata and GitHub API calls without checking out PR code. Set `worker-name` and `environment`, pass both Cloudflare secrets as shown above, and give the calling job `contents: read`, `actions: read`, and the same concurrency group as the branch's preview deployment.
 
 For a named static preview, a trusted `workflow_run` caller authorizes the operation and sets `cli: cf`, `mode: preview`, and `prebuilt: false` (the default). Set `preview-name` to a lowercase slug starting with a letter or digit and containing only letters, digits, and hyphens. Set `artifact-name` to the checked static artifact from the caller’s current run, or supply `artifact-run-id` and the name of the Cloudflare build artifact from the approved run. For an approved run the workflow publishes only `v1/workers/default/assets/`. Grant the calling job `actions: read` and `contents: read`. To maintain the shared preview comment on a fork PR, pass `pr-comment: true` and `fork-pr-number` with the triggering successful PR run as `artifact-run-id`. Grant the caller `pull-requests: write`. Use the returned `preview-build-url` for a commit-specific link.
 
-For fork previews named `pr-<number>`, call `delete-preview` from `pull_request_target` on close. Check that the PR is still closed before calling the workflow, and serialize fork publication and cleanup in the caller. Pass `preview-name: pr-${{ github.event.number }}` with the same Worker and preview environment. Set `reserve-fork-preview-names: true` on branch cleanup and exclude branch names that normalize to `pr-<number>` from branch deployments.
+If a repository reserves `pr-<number>` names for fork previews, call `cloudflare-fork-preview-cleanup.yml` from a scheduled workflow. Pass the Worker name and the Cloudflare secrets and give the calling job `pull-requests: read`. Use the same concurrency group for scheduled cleanup and fork publishing. The cleanup workflow checks closed fork PRs targeting the default branch. Set `reserve-fork-preview-names: true` on branch cleanup and exclude branch names that normalize to `pr-<number>` from branch deployments.
 
 ## Dependency pinning and updates
 
