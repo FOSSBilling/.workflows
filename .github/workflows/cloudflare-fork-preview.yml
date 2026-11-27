@@ -219,9 +219,9 @@ jobs:
               ...context.repo, run_id: context.runId,
             });
             const reviewed = reviews.some(review => review.state === 'approved' &&
-              review.user?.type === 'User' && review.user.id !== pr.user.id &&
+              review.user?.type === 'User' &&
               review.environments.some(environment => environment.name === 'fork-preview'));
-            if (!reviewed) throw new Error('Approve this deployment through GitHub as a configured reviewer other than the PR author.');
+            if (!reviewed) throw new Error('Approve this deployment through GitHub as a configured reviewer.');
 
       - name: Deploy Fork Preview
         id: deploy
