@@ -77,7 +77,7 @@ jobs:
       pull-requests: read
     concurrency:
       group: fork-preview-${{ needs.prepare.outputs.pr-number }}
-      cancel-in-progress: true
+      queue: max
     environment:
       name: fork-preview
       url: ${{ steps.deploy.outputs.url }}

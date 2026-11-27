@@ -44,7 +44,7 @@ Reserve `pr-<number>` names by excluding them from branch builds and setting `re
 
 ## Contributing
 
-Run `actionlint` before opening a PR. If you change an action reference, run `gh actions-lock` and commit the updated [lockfile](.github/workflows/actions.lock).
+Run `actionlint` with the options in the [lint workflow](.github/workflows/actionlint.yml). If you change an action reference, run `gh actions-lock` and commit the updated [lockfile](.github/workflows/actions.lock).
 
 Questions? Say hello on [Discord](https://fossbilling.org/discord) or the [forum](https://forum.fossbilling.org/).
 
