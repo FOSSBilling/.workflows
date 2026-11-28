@@ -1,59 +1,50 @@
 # FOSSBilling Shared Workflows
 
-This repository hosts the reusable GitHub Actions workflows shared across the [FOSSBilling](https://fossbilling.org/) organization. Instead of duplicating CI/CD logic in every project, call the workflows here from other repositories:
+Reusable GitHub Actions workflows for the [FOSSBilling](https://fossbilling.org/) organization. Pin each caller to a reviewed commit SHA.
 
-```yaml
-uses: FOSSBilling/.workflows/.github/workflows/<workflow>.yml@main
-```
+| Workflow | Purpose |
+| --- | --- |
+| [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) | Deploys Workers with `cf`, updates PR preview comments, and removes branch previews. |
+| [`cloudflare-fork-preview.yml`](.github/workflows/cloudflare-fork-preview.yml) | Deploys fork previews after GitHub approval. |
+| [`cloudflare-fork-preview-cleanup.yml`](.github/workflows/cloudflare-fork-preview-cleanup.yml) | Removes previews for closed fork PRs on a schedule. |
 
-## Workflows
+## Deploy a Worker
 
-| File | Type | Purpose |
-| --- | --- | --- |
-| [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) | Reusable (`workflow_call`) | Deploys Workers with Wrangler or `cf`, syncs preview comments, and cleans up previews. |
-| [`actionlint.yml`](.github/workflows/actionlint.yml) | CI for this repo | Lints all workflow files with [actionlint](https://github.com/rhysd/actionlint), run via a digest-pinned Docker image on every push and pull request. |
-| [`verify-lockfile.yml`](.github/workflows/verify-lockfile.yml) | CI for this repo | Verifies [`actions.lock`](.github/workflows/actions.lock) with `gh actions-lock --verify` whenever workflow files change. |
-
-## Using the Cloudflare Workers workflow
+Commit `cloudflare.config.ts` at the repository root and pin `cf` 1.0.0-beta.18 or newer in the caller’s dependencies. This example expects a `build` job to upload production build output from `.cloudflare/output/` as `worker-build` with `include-hidden-files: true`.
 
 ```yaml
 jobs:
   deploy:
-    uses: FOSSBilling/.workflows/.github/workflows/cloudflare-workers.yml@main
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      actions: read
+    uses: FOSSBilling/.workflows/.github/workflows/cloudflare-workers.yml@<commit-sha>
     with:
-      operation: deploy
-      mode: production             # preview | production
-      environment: production      # GitHub environment holding the secrets
-      artifact-name: worker-build  # build artifact uploaded earlier in the run
-      cli: wrangler                # wrangler | cf
-      config-path: wrangler.jsonc  # required when cli is wrangler
+      mode: production
+      environment: production
+      artifact-name: worker-build
+      artifact-path: .cloudflare/output/
+      prebuilt: true
     secrets:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 ```
 
-Use `deployment-url` for production. For previews, `preview-url` follows the branch and `preview-build-url` points to a specific build.
+See the workflow files for their inputs and outputs. Wrangler callers can keep their existing workflow SHA.
 
-Use `sync-pr-comment` on `pull_request` for opened, reopened, and synchronized same-repository PRs, or on `workflow_run` for completed push builds. Give the caller `actions: read`, `contents: read`, and `pull-requests: write`. PR comment updates read build metadata and preview URLs via the GitHub API without executing PR code.
+## Fork previews
 
-See the `inputs:` and `outputs:` blocks at the top of [`cloudflare-workers.yml`](.github/workflows/cloudflare-workers.yml) for the full list, including `pr-comment`, `worker-name`, and `prebuilt`.
+Build the exact fork PR head in `pull_request` CI and upload `.cloudflare/output/` as `fork-preview-${{ github.run_attempt }}` with `include-hidden-files: true`. Call `cloudflare-fork-preview.yml` on completed `workflow_run` events with the CI filename as `build-workflow`. Grant the caller `actions: read`, `contents: read`, and `pull-requests: read`.
 
-Use `delete-preview` on `pull_request` with `types: [closed]` for same-repository PRs, or on `delete` for branches that are still absent when cleanup runs. Set `worker-name` and `environment`, pass both Cloudflare secrets as shown above, and give the calling job `contents: read` and the same concurrency group as the branch's preview deployment.
+Set required reviewers on the `fork-preview` environment and pass the existing `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the caller. GitHub shows the preview URL on the deployment. The workflow reads deployment settings from the default branch’s Node-loadable `cloudflare.config.ts` and npm lockfile. Configure test bindings and secrets in Cloudflare Previews Base for previews that run Worker code.
 
-For a named static preview, a trusted `workflow_run` caller authorizes the operation and sets `cli: cf`, `mode: preview`, and `prebuilt: false` (the default). Set `preview-name` to a lowercase slug starting with a letter or digit and containing only letters, digits, and hyphens, such as `forkpreview-123`. Set `artifact-name` to the checked static artifact from the caller’s current run, or supply `artifact-run-id` and the name of the Cloudflare build artifact from the approved run. For an approved run the workflow publishes only `v1/workers/default/assets/`. Grant the calling job `actions: read` and `contents: read`. To maintain the shared preview comment on a fork PR, pass `pr-comment: true` and `fork-pr-number` with the triggering successful PR run as `artifact-run-id`. Grant the caller `pull-requests: write`. Use the returned `preview-build-url` for a commit-specific link. To clean up, pass the same name with `operation: delete-preview`, `worker-name`, and the preview environment.
-
-## Dependency pinning and updates
-
-Third-party actions are pinned as strictly as possible:
-
-- Every action referenced by the workflows is locked to a commit SHA in [`actions.lock`](.github/workflows/actions.lock), generated by [`gh-actions-lock`](https://github.com/github/gh-actions-lock). CI rejects any workflow change that doesn't update the lockfile. Regenerate it locally with `gh actions-lock` after editing workflows.
-- The actionlint check runs `rhysd/actionlint` by Docker digest (`@sha256:...`), not by tag.
-- The `gh-actions-lock` extension itself is installed with `--pin v0.5.1` in `verify-lockfile.yml`.
-- [Renovate](.github/renovate.json) opens PRs to bump action versions, the lockfile, and the pinned extension, with automerge schedules configured.
+Reserve `pr-<number>` names by excluding them from branch builds and setting `reserve-fork-preview-names: true` on branch cleanup. Call `cloudflare-fork-preview-cleanup.yml` on a schedule with `pull-requests: read` and the same `worker-name`. Pass `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` under `secrets:` as shown above.
 
 ## Contributing
 
-Open a pull request with your change. The `actionlint` and `verify-lockfile` workflows run automatically — make sure both pass before merging. If you add or change a third-party action, run `gh actions-lock` and commit the updated `actions.lock` in the same PR.
+Run `actionlint` with the options in the [lint workflow](.github/workflows/actionlint.yml). If you change an action reference, run `gh actions-lock` and commit the updated [lockfile](.github/workflows/actions.lock).
 
 Questions? Say hello on [Discord](https://fossbilling.org/discord) or the [forum](https://forum.fossbilling.org/).
 

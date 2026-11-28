@@ -7,10 +7,10 @@ on:
         description: Operation to perform (deploy, sync-pr-comment, or delete-preview).
         default: deploy
         type: string
-      preview-name:
-        description: Explicit name for a checked static cf preview or its cleanup from a trusted workflow_run.
-        type: string
-        default: ''
+      reserve-fork-preview-names:
+        description: Leave pr-<number> previews untouched during branch cleanup.
+        type: boolean
+        default: false
       build-workflow:
         description: Deployment workflow filename or ID; required for sync-pr-comment.
         default: ''
@@ -32,10 +32,6 @@ on:
       artifact-name:
         description: Build artifact to deploy. Defaults to the current run as its source.
         type: string
-      artifact-run-id:
-        description: Approved CI run in this repository supplying a Cloudflare build output for a named static preview.
-        type: string
-        default: ''
       artifact-path:
         description: Directory in which to restore the build artifact; must be .cloudflare/output/ when prebuilt is true.
         default: dist/
@@ -44,36 +40,18 @@ on:
         description: "Deploy .cloudflare/output/ with cf --prebuilt. The artifact must match the deployment mode (preview or production)."
         default: false
         type: boolean
-      cli:
-        description: "CLI used to deploy the Worker: wrangler (via wrangler-action, driven by config-path) or cf (Cloudflare CLI, driven by cloudflare.config.ts in the repository root; the cf version is the one pinned in the caller's package.json)."
-        default: wrangler
-        type: string
       cf-mode:
         description: "Build mode for cf --prebuilt. Must match buildContext.mode in .cloudflare/output/v1/config.json."
         default: production
         type: string
-      config-path:
-        description: Wrangler configuration path relative to the workspace; required when cli is wrangler, ignored when cli is cf.
-        type: string
-      wrangler-environment:
-        description: Optional named environment in the Wrangler configuration; only used when cli is wrangler.
-        default: ''
-        type: string
       node-version:
-        description: Node.js version used to run the deploy CLI (Wrangler or cf).
+        description: Node.js version used to run cf.
         default: 'lts/*'
-        type: string
-      wrangler-version:
-        description: Optional Wrangler version; omit to use the wrangler-action default value; only used when cli is wrangler.
         type: string
       pr-comment:
         description: "Maintain comments on matching PRs for preview build and deployment attempts (requires actions: read and pull-requests: write in the caller)."
         default: false
         type: boolean
-      fork-pr-number:
-        description: Fork PR receiving the named static preview comment for the triggering CI run.
-        type: string
-        default: ''
       pr-base-branch:
         description: PR target branch; defaults to the calling repository's default branch.
         default: ''
@@ -111,7 +89,6 @@ on:
         description: Preview name (preview mode only).
         value: ${{ jobs.deploy.outputs.preview-name }}
 
-# Downloading an approved build from another run requires actions: read.
 # Commenting inherits the caller's actions: read and pull-requests: write permissions.
 jobs:
   validate:
@@ -123,18 +100,13 @@ jobs:
       - name: Validate Inputs
         uses: actions/github-script@v9.0.0
         env:
-          PREVIEW_NAME: ${{ inputs.preview-name }}
           OPERATION: ${{ inputs.operation }}
           MODE: ${{ inputs.mode }}
           BUILD_RESULT: ${{ inputs.build-result }}
           CHECKS_RESULT: ${{ inputs.checks-result }}
           TARGET_ENVIRONMENT: ${{ inputs.environment }}
           ARTIFACT_NAME: ${{ inputs.artifact-name }}
-          FORK_PR_NUMBER: ${{ inputs.fork-pr-number }}
-          ARTIFACT_RUN_ID: ${{ inputs.artifact-run-id }}
           ARTIFACT_PATH: ${{ inputs.artifact-path }}
-          CONFIG_PATH: ${{ inputs.config-path }}
-          CLI: ${{ inputs.cli }}
           PREBUILT: ${{ inputs.prebuilt }}
           CF_MODE: ${{ inputs.cf-mode }}
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
@@ -145,36 +117,11 @@ jobs:
             if (!['deploy', 'sync-pr-comment', 'delete-preview'].includes(operation)) {
               throw new Error('operation must be deploy, sync-pr-comment, or delete-preview');
             }
-            const cli = process.env.CLI;
-            if (!['wrangler', 'cf'].includes(cli)) {
-              throw new Error('cli must be wrangler or cf');
-            }
             if (process.env.WORKER_NAME && !/^[a-zA-Z0-9_-]+$/.test(process.env.WORKER_NAME)) {
               throw new Error('worker-name must contain only letters, numbers, underscores, or hyphens');
             }
-            if (process.env.FORK_PR_NUMBER) {
-              const run = context.payload.workflow_run;
-              if (!/^[1-9]\d*$/.test(process.env.FORK_PR_NUMBER) || run?.event !== 'pull_request' ||
-                  run.conclusion !== 'success' || !run.head_repository || run.head_repository.id === context.payload.repository.id ||
-                  String(run.id) !== process.env.ARTIFACT_RUN_ID) {
-                throw new Error('fork-pr-number requires the successful triggering fork PR build as artifact-run-id');
-              }
-            }
-            if (process.env.ARTIFACT_RUN_ID && (!/^[1-9]\d*$/.test(process.env.ARTIFACT_RUN_ID) ||
-                !process.env.PREVIEW_NAME || operation !== 'deploy')) {
-              throw new Error('artifact-run-id requires a positive run ID and a named static preview deployment');
-            }
-            if (process.env.PREVIEW_NAME) {
-              const staticPreview = operation === 'deploy' && process.env.MODE === 'preview' &&
-                cli === 'cf' && process.env.PREBUILT === 'false';
-              if (context.eventName !== 'workflow_run' || !/^[a-z0-9][a-z0-9-]*$/.test(process.env.PREVIEW_NAME) ||
-                  (!staticPreview && operation !== 'delete-preview')) {
-                throw new Error('preview-name requires a workflow_run static cf preview or preview cleanup and a lowercase slug');
-              }
-            }
             if (operation === 'deploy') {
               if (process.env.PREBUILT === 'true') {
-                if (cli !== 'cf') throw new Error('prebuilt is only supported with cli: cf');
                 if (!/^[a-zA-Z0-9_-]+$/.test(process.env.CF_MODE)) {
                   throw new Error('cf-mode must contain only letters, numbers, underscores, or hyphens');
                 }
@@ -190,16 +137,12 @@ jobs:
               if (!['preview', 'production'].includes(process.env.MODE)) {
                 throw new Error('mode must be preview or production for deploy');
               }
-              // cf reads cloudflare.config.ts from the repository root, so config-path is wrangler-only.
-              const required = cli === 'cf'
-                ? ['TARGET_ENVIRONMENT', 'ARTIFACT_NAME']
-                : ['TARGET_ENVIRONMENT', 'ARTIFACT_NAME', 'CONFIG_PATH'];
-              for (const name of required) {
+              for (const name of ['TARGET_ENVIRONMENT', 'ARTIFACT_NAME']) {
                 if (!process.env[name]?.trim()) throw new Error(`${name} is required for deploy`);
               }
             } else if (operation === 'sync-pr-comment') {
-              if (!['workflow_run', 'pull_request'].includes(context.eventName)) {
-                throw new Error('sync-pr-comment requires a workflow_run or pull_request event');
+              if (context.eventName !== 'pull_request') {
+                throw new Error('sync-pr-comment requires a pull_request event');
               }
               if (!process.env.BUILD_WORKFLOW.trim()) throw new Error('build-workflow is required for sync-pr-comment');
             } else {
@@ -212,8 +155,7 @@ jobs:
     needs: validate
     if: >-
       inputs.operation == 'delete-preview' &&
-      (inputs.preview-name != '' ||
-       (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      ((github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository) ||
        (github.event_name == 'delete' && github.event.ref_type == 'branch' && github.event.ref != '' && github.event.ref != github.event.repository.default_branch))
     runs-on: ubuntu-slim
     timeout-minutes: 10
@@ -223,13 +165,22 @@ jobs:
       name: ${{ inputs.environment }}
       deployment: false
     steps:
-      - name: Check Deleted Branch
-        id: branch
-        if: github.event_name == 'delete'
+      - name: Check Branch Preview Cleanup
+        id: branch-cleanup
         uses: actions/github-script@v9.0.0
+        env:
+          RESERVE_FORK_PREVIEW_NAMES: ${{ inputs.reserve-fork-preview-names }}
         with:
           script: |
-            const ref = `heads/${context.payload.ref}`;
+            const branch = context.payload.pull_request?.head.ref ?? context.payload.ref;
+            if (process.env.RESERVE_FORK_PREVIEW_NAMES === 'true') {
+              const slug = branch.normalize('NFKD').replace(/\p{Mark}/gu, '').toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+              if (/^pr-\d+$/.test(slug)) return false;
+            }
+            if (context.eventName !== 'delete') return true;
+
+            const ref = `heads/${branch}`;
             try {
               await github.rest.git.getRef({ ...context.repo, ref });
             } catch (error) {
@@ -239,11 +190,11 @@ jobs:
             core.notice(`Skipping preview cleanup because ${ref} exists again`);
             return false;
       - name: Delete Preview
-        if: inputs.preview-name != '' || github.event_name == 'pull_request' || steps.branch.outputs.result == 'true'
+        if: steps.branch-cleanup.outputs.result == 'true'
         env:
           # renovate: datasource=npm depName=cf
           CF_VERSION: '1.0.0-rc.3'
-          PREVIEW_NAME: ${{ inputs.preview-name || github.event.pull_request.head.ref || github.event.ref }}
+          PREVIEW_NAME: ${{ github.event.pull_request.head.ref || github.event.ref }}
           WORKER_NAME: ${{ inputs.worker-name }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -267,31 +218,20 @@ jobs:
       name: ${{ inputs.environment }}
       deployment: false
     outputs:
-      deployment-url: ${{ steps.cf-parse.outputs.deployment-url || steps.wrangler.outputs.deployment-url }}
-      preview-url: ${{ steps.cf-parse.outputs.preview-url || steps.wrangler.outputs.preview-url }}
-      preview-build-url: ${{ steps.cf-parse.outputs.preview-build-url || steps.wrangler.outputs.preview-deployment-url }}
-      preview-name: ${{ steps.cf-parse.outputs.preview-name || steps.wrangler.outputs.preview-name }}
+      deployment-url: ${{ steps.cf-parse.outputs.deployment-url }}
+      preview-url: ${{ steps.cf-parse.outputs.preview-url }}
+      preview-build-url: ${{ steps.cf-parse.outputs.preview-build-url }}
+      preview-name: ${{ steps.cf-parse.outputs.preview-name }}
     steps:
-      - name: Validate Deployment Inputs
-        id: command
+      - name: Check Cloudflare Credentials
         uses: actions/github-script@v9.0.0
         env:
-          MODE: ${{ inputs.mode }}
-          CLI: ${{ inputs.cli }}
-          CONFIG_PATH: ${{ inputs.config-path }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         with:
           script: |
             for (const name of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID']) {
               if (!process.env[name]?.trim()) throw new Error(`${name} is required for deploy`);
-            }
-            if (process.env.CLI === 'wrangler') {
-              const config = process.env.CONFIG_PATH;
-              if (!config || /["`$\\\r\n]/.test(config)) {
-                throw new Error('config-path must be a path without shell metacharacters');
-              }
-              core.setOutput('command', `${process.env.MODE === 'preview' ? 'preview' : 'deploy'} --config "${config}"`);
             }
 
       - name: Checkout Repository
@@ -306,51 +246,16 @@ jobs:
           node-version: ${{ inputs.node-version }}
 
       - name: Download Worker Build
-        if: inputs.artifact-run-id == ''
         uses: actions/download-artifact@v8.0.2
         with:
           name: ${{ inputs.artifact-name }}
-          path: ${{ inputs.preview-name && format('{0}/static-preview', runner.temp) || inputs.artifact-path }}
-
-      - name: Download Approved Worker Build
-        if: inputs.artifact-run-id != ''
-        uses: actions/download-artifact@v8.0.2
-        with:
-          name: ${{ inputs.artifact-name }}
-          run-id: ${{ inputs.artifact-run-id }}
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/approved-build
-
-      - name: Prepare Approved Static Assets
-        if: inputs.artifact-run-id != ''
-        working-directory: ${{ runner.temp }}/approved-build
-        run: |
-          special=$(find . ! -type f ! -type d -print -quit)
-          test -z "$special"
-          assets=v1/workers/default/assets
-          test -f "$assets/index.html"
-          mv "$assets" "$RUNNER_TEMP/static-preview"
-          cd "$RUNNER_TEMP/static-preview"
-          rm -rf -- _worker.js _routes.json
-          printf '/*\n  X-Robots-Tag: noindex\n' > _headers
-
-      - name: Deploy Worker
-        id: wrangler
-        if: ${{ inputs.cli == 'wrangler' }}
-        uses: cloudflare/wrangler-action@v4.1.3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: ${{ inputs.wrangler-version }}
-          environment: ${{ inputs.wrangler-environment }}
-          command: ${{ steps.command.outputs.command }}
+          path: ${{ inputs.artifact-path }}
 
       - name: Prepare cf Project
-        if: inputs.cli == 'cf'
         run: |
           # cf generates a configuration if one is missing.
           if [ ! -f cloudflare.config.ts ]; then
-            echo 'cloudflare.config.ts is required at the repository root when cli is cf; run cf migrate first' >&2
+            echo 'cloudflare.config.ts is required at the repository root; run cf migrate first' >&2
             exit 1
           fi
 
@@ -360,8 +265,23 @@ jobs:
             npm install --no-audit --no-fund
           fi
 
+      - name: Verify Branch Head
+        if: github.event_name == 'push' && (github.ref_type == 'branch' || github.event.deleted)
+        uses: actions/github-script@v9.0.0
+        with:
+          script: |
+            if (context.payload.deleted) throw new Error('Cannot deploy a deleted branch');
+            try {
+              const { data } = await github.rest.git.getRef({ ...context.repo, ref: context.ref.slice('refs/'.length) });
+              if (data.object.sha !== context.sha) {
+                throw new Error('Branch head has advanced. Deploy from the current commit.');
+              }
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              throw new Error('Cannot deploy a branch that no longer exists');
+            }
+
       - name: Deploy with cf
-        if: ${{ inputs.cli == 'cf' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -369,26 +289,21 @@ jobs:
           MODE: ${{ inputs.mode }}
           PREBUILT: ${{ inputs.prebuilt }}
           CF_MODE: ${{ inputs.cf-mode }}
-          PREVIEW_NAME: ${{ inputs.preview-name }}
-          CF_STDOUT: ${{ runner.temp }}/cf-stdout.log
-          # Some cf versions report production targets only in Wrangler's output file.
+          # cf deploy and cf previews deploy both write structured results here.
           WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/cf-output.ndjson
         shell: bash
         run: |
           args=(deploy)
           if [[ "$MODE" == preview ]]; then args=(previews deploy); fi
-          if [[ -n "$PREVIEW_NAME" ]]; then args+=("$RUNNER_TEMP/static-preview" --preview-name "$PREVIEW_NAME"); fi
           if [[ "$PREBUILT" == true ]]; then args+=(--prebuilt --mode "$CF_MODE"); fi
-          ./node_modules/.bin/cf "${args[@]}" | tee "$CF_STDOUT"
+          ./node_modules/.bin/cf "${args[@]}"
 
       - name: Parse cf Result
         id: cf-parse
-        if: inputs.cli == 'cf'
         uses: actions/github-script@v9.0.0
         env:
           MODE: ${{ inputs.mode }}
-          CF_STDOUT: ${{ runner.temp }}/cf-stdout.log
-          CF_NDJSON: ${{ runner.temp }}/cf-output.ndjson
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/cf-output.ndjson
         with:
           script: |
             const fs = require('node:fs');
@@ -421,15 +336,8 @@ jobs:
               if (!Array.isArray(list)) return '';
               return normalizeUrl(list.find(item => typeof item === 'string' && item.trim()));
             };
-            // cf reports JSON on stdout or in Wrangler's NDJSON file, depending on the command and version.
-            let result = parseResult(fs.readFileSync(process.env.CF_STDOUT, 'utf8'));
-            if (!result) {
-              try {
-                result = fs.readFileSync(process.env.CF_NDJSON, 'utf8').split('\n').map(parseResult).findLast(Boolean);
-              } catch (error) {
-                if (error.code !== 'ENOENT') throw error;
-              }
-            }
+            const result = fs.readFileSync(process.env.WRANGLER_OUTPUT_FILE_PATH, 'utf8')
+              .split('\n').map(parseResult).findLast(Boolean);
             if (!result) throw new Error('cf did not report a result');
             if (preview) {
               const previewUrl = firstUrl(result.preview_urls) || normalizeUrl(result.preview_alias_url);
@@ -450,10 +358,10 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
           DEPLOYMENT_STATUS: ${{ job.status }}
-          DEPLOYMENT_URL: ${{ steps.cf-parse.outputs.deployment-url || steps.wrangler.outputs.deployment-url }}
-          PREVIEW_NAME: ${{ steps.cf-parse.outputs.preview-name || steps.wrangler.outputs.preview-name }}
-          PREVIEW_URL: ${{ steps.cf-parse.outputs.preview-url || steps.wrangler.outputs.preview-url }}
-          PREVIEW_BUILD_URL: ${{ steps.cf-parse.outputs.preview-build-url || steps.wrangler.outputs.preview-deployment-url }}
+          DEPLOYMENT_URL: ${{ steps.cf-parse.outputs.deployment-url }}
+          PREVIEW_NAME: ${{ steps.cf-parse.outputs.preview-name }}
+          PREVIEW_URL: ${{ steps.cf-parse.outputs.preview-url }}
+          PREVIEW_BUILD_URL: ${{ steps.cf-parse.outputs.preview-build-url }}
         with:
           script: |
             const preview = process.env.MODE === 'preview';
@@ -462,10 +370,9 @@ jobs:
               .replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
             const link = (value, label) => {
               if (!value) return 'Unavailable';
-              const customDomain = value.match(/^([a-z0-9.-]+) \(custom domain(?: - zone (?:name|id): [^)]+)?\)$/i);
               let url;
               try {
-                url = new URL(customDomain ? `https://${customDomain[1]}` : value);
+                url = new URL(value);
               } catch {
                 return escape(value);
               }
@@ -492,7 +399,7 @@ jobs:
     if: >-
       !cancelled() && needs.validate.result == 'success' &&
       inputs.operation == 'deploy' && inputs.mode == 'preview' &&
-      ((github.event_name == 'push' && github.ref_type == 'branch') || (inputs.fork-pr-number != '' && inputs.pr-comment))
+      github.event_name == 'push' && github.ref_type == 'branch'
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
     runs-on: ubuntu-slim
@@ -502,9 +409,7 @@ jobs:
       - name: Write Preview Metadata
         uses: actions/github-script@v9.0.0
         env:
-          SOURCE_SHA: ${{ inputs.fork-pr-number && github.event.workflow_run.head_sha || github.sha }}
-          EXPECTED_NAME: ${{ inputs.preview-name }}
-          DEPLOYED_NAME: ${{ needs.deploy.outputs.preview-name }}
+          SOURCE_SHA: ${{ github.sha }}
           PREVIEW_URL: ${{ needs.deploy.outputs.preview-url }}
           PREVIEW_BUILD_URL: ${{ needs.deploy.outputs.preview-build-url }}
           BUILD_RESULT: ${{ inputs.build-result }}
@@ -518,9 +423,6 @@ jobs:
             const fs = require('node:fs');
             const path = require('node:path');
             const success = process.env.DEPLOY_RESULT === 'success';
-            if (success && process.env.EXPECTED_NAME && process.env.DEPLOYED_NAME !== process.env.EXPECTED_NAME) {
-              throw new Error('Unexpected deployed preview name');
-            }
             const links = {
               sha: process.env.SOURCE_SHA,
               preview: success ? process.env.PREVIEW_URL : null,
@@ -533,12 +435,7 @@ jobs:
               worker: process.env.WORKER_NAME,
               updatedAt: new Date().toISOString(),
             };
-            for (const value of success ? [links.preview, links.build] : []) {
-              const url = new URL(value);
-              if (url.protocol !== 'https:' || url.username || url.password) {
-                throw new Error('Invalid preview URL');
-              }
-            }
+            if (success && (!links.preview || !links.build)) throw new Error('Preview URLs are missing');
             fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'preview-links.json'), JSON.stringify(links));
 
       - name: Upload Preview Metadata
@@ -559,7 +456,7 @@ jobs:
     runs-on: ubuntu-slim
     timeout-minutes: 10
     concurrency:
-      group: cloudflare-preview-comment-${{ github.repository }}-${{ inputs.worker-name }}-${{ inputs.fork-pr-number || github.event.pull_request.head.ref || github.event.workflow_run.head_branch || github.ref_name }}
+      group: cloudflare-preview-comment-${{ github.repository }}-${{ inputs.worker-name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
       cancel-in-progress: false
     steps:
       # Use only API calls and preview metadata. Never check out or execute PR code.
@@ -567,7 +464,6 @@ jobs:
         id: build
         uses: actions/github-script@v9.0.0
         env:
-          FORK_PR_NUMBER: ${{ inputs.fork-pr-number }}
           RECORDED_ARTIFACT_ID: ${{ needs.preview.outputs.artifact-id }}
           OPERATION: ${{ inputs.operation }}
           BUILD_WORKFLOW: ${{ inputs.build-workflow }}
@@ -578,63 +474,41 @@ jobs:
             const repo = context.repo;
             const repository = context.payload.repository;
             const base = process.env.PR_BASE_BRANCH || repository.default_branch;
-            const direct = process.env.OPERATION === 'deploy';
-            const eventRun = context.payload.workflow_run;
             const pr = context.payload.pull_request;
-            if (process.env.FORK_PR_NUMBER) {
-              // Metadata comes from this publisher run. The commit comes from the fork CI run.
-              core.setOutput('artifact-id', process.env.RECORDED_ARTIFACT_ID);
-              core.setOutput('run-id', String(context.runId));
-              core.setOutput('sha', eventRun.head_sha);
-              core.setOutput('prs', JSON.stringify([Number(process.env.FORK_PR_NUMBER)]));
-              return;
-            }
-            if (direct) {
+            const select = (artifactId, runId, sha, numbers) => {
+              core.setOutput('artifact-id', String(artifactId));
+              core.setOutput('run-id', String(runId));
+              core.setOutput('sha', sha);
+              core.setOutput('prs', JSON.stringify(numbers));
+            };
+            if (process.env.OPERATION === 'deploy') {
+              const artifactId = process.env.RECORDED_ARTIFACT_ID;
+              if (!artifactId) throw new Error('Preview metadata artifact is missing');
               if (!context.ref.startsWith('refs/heads/')) return;
-            } else if (context.eventName === 'workflow_run') {
-              if (!eventRun || eventRun.event !== 'push' || eventRun.status !== 'completed' ||
-                  eventRun.head_repository?.full_name !== repository.full_name) return;
-            } else if (!pr || pr.state !== 'open' || pr.base.ref !== base ||
-                       pr.head.repo?.full_name !== repository.full_name) {
+              const branch = context.ref.slice('refs/heads/'.length);
+              const prs = await github.paginate(github.rest.pulls.list, {
+                ...repo, state: 'open', base, head: `${repo.owner}:${branch}`, per_page: 100,
+              });
+              const numbers = prs.filter(candidate =>
+                candidate.state === 'open' && candidate.base.ref === base &&
+                candidate.head.repo?.full_name === repository.full_name &&
+                candidate.head.ref === branch && candidate.head.sha === context.sha
+              ).map(candidate => candidate.number);
+              if (numbers.length) select(artifactId, context.runId, context.sha, numbers);
               return;
             }
-            let workflow;
-            let candidates;
-            if (direct) {
-              // The preview attempt has published metadata; the overall CI run may still be in progress.
-              const { data: run } = await github.rest.actions.getWorkflowRun({ ...repo, run_id: context.runId });
-              if (run.head_sha !== context.sha || run.head_branch !== context.ref.slice('refs/heads/'.length)) return;
-              workflow = { id: run.workflow_id };
-              candidates = [run];
-            } else {
-              ({ data: workflow } = await github.rest.actions.getWorkflow({
-                ...repo, workflow_id: process.env.BUILD_WORKFLOW,
-              }));
-              if (eventRun) {
-                candidates = [eventRun];
-              } else {
-                candidates = await github.paginate(github.rest.actions.listWorkflowRuns, {
-                  ...repo, workflow_id: workflow.id, event: 'push',
-                  branch: pr.head.ref, head_sha: pr.head.sha, per_page: 100,
-                });
-                candidates.sort((a, b) => b.run_number - a.run_number || b.run_attempt - a.run_attempt);
-              }
+            if (context.eventName !== 'pull_request' || pr?.state !== 'open' || pr.base.ref !== base ||
+                pr.head.repo?.full_name !== repository.full_name) {
+              return;
             }
-            const runs = candidates.filter(run =>
-              run.workflow_id === workflow.id && run.event === 'push' &&
-              run.head_repository?.full_name === repository.full_name &&
-              (!pr || (run.head_sha === pr.head.sha && run.head_branch === pr.head.ref))
-            );
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...repo, workflow_id: process.env.BUILD_WORKFLOW, event: 'push',
+              branch: pr.head.ref, head_sha: pr.head.sha, per_page: 100,
+            });
+            runs.sort((a, b) => b.run_number - a.run_number || b.run_attempt - a.run_attempt);
             for (const run of runs) {
-              const prs = await github.paginate(github.rest.pulls.list, {
-                ...repo, state: 'open', base,
-                head: `${repo.owner}:${run.head_branch}`, per_page: 100,
-              });
-              const numbers = prs.filter(pr =>
-                pr.state === 'open' && pr.base.ref === base &&
-                pr.head.repo?.full_name === repository.full_name && pr.head.sha === run.head_sha
-              ).map(pr => pr.number);
-              if (!numbers.length) continue;
+              if (run.event !== 'push' || run.head_repository?.full_name !== repository.full_name ||
+                  run.head_sha !== pr.head.sha || run.head_branch !== pr.head.ref) continue;
               const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
                 ...repo, run_id: run.id, per_page: 100,
               });
@@ -649,11 +523,8 @@ jobs:
               available.sort((a, b) => b.attempt - a.attempt);
               const selected = available[0];
               if (!selected) continue;
-              core.setOutput('artifact-id', String(selected.artifact.id));
+              select(selected.artifact.id, run.id, run.head_sha, [pr.number]);
               core.setOutput('attempt', selected.attempt ? String(selected.attempt) : '');
-              core.setOutput('run-id', String(run.id));
-              core.setOutput('sha', run.head_sha);
-              core.setOutput('prs', JSON.stringify(numbers));
               return;
             }
       - name: Download Preview Links
@@ -668,7 +539,6 @@ jobs:
         if: steps.build.outputs.run-id
         uses: actions/github-script@v9.0.0
         env:
-          FORK_PR_NUMBER: ${{ inputs.fork-pr-number }}
           PREVIEW_RUN_ID: ${{ steps.build.outputs.run-id }}
           PREVIEW_SHA: ${{ steps.build.outputs.sha }}
           PREVIEW_ATTEMPT: ${{ steps.build.outputs.attempt }}
@@ -717,17 +587,16 @@ jobs:
             const attemptKey = `<!-- cloudflare-preview-run:${process.env.PREVIEW_RUN_ID}:${attempt} -->`;
             const logsUrl = links.attempt === undefined ? runUrl : `${runUrl}/attempts/${attempt}`;
             const status = result => ({success: 'Success ✅', failure: 'Failed ❌', skipped: 'Not run ⏭️', cancelled: 'Cancelled ⏹️'})[result];
-            const rowFor = (sha, build, run, updated = '—', results = {}, key = '') => {
+            const rowFor = (sha, buildUrl, logsUrl, updated = '—', results = {}, key = '') => {
               const buildStatus = results.build ?? 'success';
               const checksStatus = results.checks ?? 'success';
               const deploymentStatus = results.deployment ?? 'success';
               const state = `**Build:** ${status(buildStatus)}` +
                 (checksStatus === 'success' ? '' : `<br>**Checks:** ${status(checksStatus)}`) +
                 `<br>**Deployment:** ${status(deploymentStatus)}`;
-              const url = build ? safeUrl(build) : null;
-              return `| ${state} | ${url ? `[${url}](${url})` : '—'} | [\`${sha.slice(0, 7)}\`](${repoUrl}/commit/${sha}) | ${updated} | [View logs ↗](${safeUrl(run)}) ${key} |`;
+              return `| ${state} | ${buildUrl ? `[${buildUrl}](${buildUrl})` : '—'} | [\`${sha.slice(0, 7)}\`](${repoUrl}/commit/${sha}) | ${updated} | [View logs ↗](${logsUrl}) ${key} |`;
             };
-            const latestRow = rowFor(links.sha, buildUrl, logsUrl, updatedAt,
+            const latestRow = rowFor(links.sha, buildUrl, safeUrl(logsUrl), updatedAt,
               {build: buildResult, checks: checksResult, deployment: deploymentResult}, attemptKey);
             const omittedNotice = 'Older deployments omitted to fit the comment size limit.';
             for (const issue_number of JSON.parse(process.env.PREVIEW_PRS)) {
@@ -743,7 +612,7 @@ jobs:
               const legacyBuild = previous.match(/^- \[This build\]\((https:\/\/[^)\s]+)\) · commit `([a-f0-9]{7,40})`$/m);
               const legacyRun = previous.match(/^- \[CI run and job summaries\]\((https:\/\/[^)\s]+)\)$/m);
               if (legacyBuild && legacyRun) {
-                rows.push(rowFor(legacyBuild[2], legacyBuild[1], legacyRun[1]));
+                rows.push(rowFor(legacyBuild[2], safeUrl(legacyBuild[1]), safeUrl(legacyRun[1])));
               }
               const index = rows.findIndex(row => row.includes(attemptKey) ||
                 (buildUrl && !row.includes('<!-- cloudflare-preview-run:') &&
@@ -759,7 +628,10 @@ jobs:
               }
               if (!previewHeader && !success) {
                 const legacyPreview = previous.match(/^(?:- )?\[Latest branch preview\]\((https:\/\/[^)\s]+)\)$/m);
-                if (legacyPreview) previewHeader = `### Preview URL: [${safeUrl(legacyPreview[1])}](${safeUrl(legacyPreview[1])})`;
+                if (legacyPreview) {
+                  const url = safeUrl(legacyPreview[1]);
+                  previewHeader = `### Preview URL: [${url}](${url})`;
+                }
               }
               let omitted = previous.includes(omittedNotice);
               const render = () => [
@@ -788,10 +660,8 @@ jobs:
               // Recheck after reading comments, immediately before writing.
               const { data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: issue_number });
               const base = process.env.PR_BASE_BRANCH || context.payload.repository.default_branch;
-              const source = process.env.FORK_PR_NUMBER ? context.payload.workflow_run.head_repository : context.payload.repository;
               if (pr.state !== 'open' || pr.base.ref !== base || pr.head.sha !== links.sha ||
-                  pr.head.repo?.id !== source.id) continue;
-              if (process.env.FORK_PR_NUMBER && pr.head.ref !== context.payload.workflow_run.head_branch) continue;
+                  pr.head.repo?.id !== context.payload.repository.id) continue;
               if (existing) {
                 await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
               } else {

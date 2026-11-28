@@ -1,0 +1,126 @@
+name: Cloudflare Fork Preview Cleanup
+
+on:
+  workflow_call:
+    inputs:
+      worker-name:
+        description: Worker whose pr-<number> preview names are reserved for fork PRs.
+        required: true
+        type: string
+      environment:
+        description: GitHub environment holding the cleanup credentials.
+        default: preview
+        type: string
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+      CLOUDFLARE_ACCOUNT_ID:
+        required: true
+
+jobs:
+  find:
+    if: github.event_name == 'schedule'
+    concurrency: cloudflare-fork-preview-cleanup
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    permissions:
+      pull-requests: read
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
+    outputs:
+      pull-requests: ${{ steps.previews.outputs.result }}
+    steps:
+      - name: Find Previews for Closed Fork PRs
+        id: previews
+        uses: actions/github-script@v9.0.0
+        env:
+          WORKER_NAME: ${{ inputs.worker-name }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        with:
+          script: |
+            const account = encodeURIComponent(process.env.CLOUDFLARE_ACCOUNT_ID);
+            const worker = encodeURIComponent(process.env.WORKER_NAME);
+            const endpoint = `https://api.cloudflare.com/client/v4/accounts/${account}/workers/workers/${worker}/previews`;
+            const names = new Set();
+            for (let page = 1, count = 0; ; page++) {
+              const response = await fetch(`${endpoint}?per_page=100&page=${page}`, {
+                headers: { Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}` },
+                signal: AbortSignal.timeout(30_000),
+              });
+              if (!response.ok) throw new Error(`Could not list Worker previews (HTTP ${response.status})`);
+              const { success, result, result_info } = await response.json();
+              if (!success || !Array.isArray(result)) throw new Error('Cloudflare did not return a preview list');
+              for (const preview of result) names.add(preview.name);
+              count += result.length;
+              if (result.length < 100 || count >= (result_info?.total_count ?? Infinity)) break;
+            }
+
+            const base = context.payload.repository.default_branch;
+            const closed = [];
+            for (const name of names) {
+              const number = Number(/^pr-([1-9]\d*)$/.exec(name)?.[1]);
+              if (!Number.isSafeInteger(number)) continue;
+              let pr;
+              try {
+                ({ data: pr } = await github.rest.pulls.get({ ...context.repo, pull_number: number }));
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                continue;
+              }
+              if (pr.state === 'closed' && pr.base.ref === base && pr.head.repo?.id !== pr.base.repo.id) {
+                closed.push(number);
+                // GitHub allows 256 jobs per matrix. Later runs pick up the rest.
+                if (closed.length === 256) break;
+              }
+            }
+            return closed;
+
+  cleanup:
+    needs: find
+    if: needs.find.outputs.pull-requests != '' && needs.find.outputs.pull-requests != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.find.outputs.pull-requests) }}
+    concurrency:
+      # Match the deploy job, so the PR check and deletion run between deployments.
+      group: fork-preview-${{ matrix.pr }}
+      queue: max
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    permissions:
+      pull-requests: read
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
+    steps:
+      - name: Check Whether the Fork PR Is Still Closed
+        id: pr
+        uses: actions/github-script@v9.0.0
+        env:
+          PR_NUMBER: ${{ matrix.pr }}
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: Number(process.env.PR_NUMBER),
+            });
+            return pr.state === 'closed' && pr.base.ref === context.payload.repository.default_branch &&
+              pr.head.repo?.id !== pr.base.repo.id;
+
+      - name: Delete Fork Preview
+        if: steps.pr.outputs.result == 'true'
+        env:
+          # renovate: datasource=npm depName=cf
+          CF_VERSION: '1.0.0-rc.3'
+          PREVIEW_NAME: pr-${{ matrix.pr }}
+          WORKER_NAME: ${{ inputs.worker-name }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: bash
+        run: |
+          if ! output=$(npx --yes --ignore-scripts "cf@$CF_VERSION" previews delete "$PREVIEW_NAME" --worker "$WORKER_NAME" --force 2>&1) && [[ "$output" != *'[10025] '* ]]; then
+            printf '%s\n' "$output" >&2
+            exit 1
+          fi
