@@ -40,7 +40,7 @@ Build the exact fork PR head in `pull_request` CI and upload `.cloudflare/output
 
 Set required reviewers on the `fork-preview` environment and pass the existing `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the caller. GitHub shows the preview URL on the deployment. The workflow reads deployment settings from the default branch’s Node-loadable `cloudflare.config.ts` and npm lockfile. Configure test bindings and secrets in Cloudflare Previews Base for previews that run Worker code.
 
-Reserve `pr-<number>` names by excluding them from branch builds and setting `reserve-fork-preview-names: true` on branch cleanup. Call `cloudflare-fork-preview-cleanup.yml` on a schedule with `pull-requests: read` and the same `worker-name` and account.
+Reserve `pr-<number>` names by excluding them from branch builds and setting `reserve-fork-preview-names: true` on branch cleanup. Call `cloudflare-fork-preview-cleanup.yml` on a schedule with `pull-requests: read` and the same `worker-name`. Pass `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` under `secrets:` as shown above.
 
 ## Contributing
 
